@@ -191,13 +191,12 @@ unless a board header explicitly says otherwise; treat **connector pins**
 |---|---|---|---|---|---|---|
 | CAN (MCP2517/18, SPI) | gp16-20 | gp16-20 | gp16-20 | gp0-4 | gp0-4 | gp0-4 |
 | I2C storage (EEPROM) | I2C1 gp26/27 | gp26/27 | — | I2C1 gp6/7 | I2C1 gp6/7 | I2C1 gp6/7 |
-| Secondary I2C | — | — | — | I2C0 gp16/17 | — | — |
+| Secondary I2C | I2C0 gp4/5 | I2C0 gp4/5 | I2C0 gp4/5 | I2C0 gp16/17 | none | none |
 | Dedicated NeoPixel pins | gp2/3/6/7 | gp2/3/6/7 | none (I/O headers only) | none | none | none |
-| Dedicated servo pins | — | — | — | — | none (v2.9 removed) | none |
-| Buttons (Blue/Gold) | gp21/gp22 | gp21/gp22 | gp21/gp22 | gp21/gp22 | gp21/gp22 (shared w/ IO2 pins 8/9) | gp5 (shared w/IO2 pin 10)/gp28 (shared w/IO3 pin 5)
-| I/O - 1 | gp15-8 |gp15-8|gp0-7|gp8-15|gp8-15|gp8-15
-| I/O - 2 |  ||gp8-15|gp18-28|gp16-26|gp16-22, 5|
-| I/O - 3 |||||gp26-28|gp26-28
+| Buttons (Blue/Gold) | gp21/gp22 | gp21/gp22 | gp21/gp22 | gp21/gp22 | gp21/gp22 (shared w/ IO2 pins 8/9) | gp5 (shared w/IO2 pin 10)/gp28 (shared w/IO3 pin 5)|
+| I/O - 1 | gp15-8 |gp15-8|gp0-7|gp8-15|gp8-15|gp8-15|
+| I/O - 2 | none |none|gp8-15|gp18-28|gp16-26|gp16-22, 5|
+| I/O - 3 |none|none|none|none|gp26-28|gp26-28|
 
 > Fill in v2.5–v2.8 columns from each board's `BoardPins_Node_v*.h` as they're
 > revisited; v3.0 is current as of this writing (see
@@ -303,6 +302,7 @@ instead of a GPIO signal.
 | I/O-2:Pin8 | Stepper Enable |
 | I/O-2:Pin9 | Stepper Step |
 | I/O-2:Pin10 | Stepper Direction |
+| I/O-3:Pin1 | Stepper Direction (common w/IO2-10)|
 | I/O-3:Pin2 | D_WR |
 | I/O-3:Pin3 | AGND |
 | I/O-3:Pin4 | D_D/C |
@@ -401,12 +401,28 @@ typedef struct {
 ```c
 uint64_t node_id = NodeIdentity_read();  // reads NVM at NODE_IDENTITY_ADDR
 if (node_id == 0) {
-    Serial.println("*** NODE ID NOT PROVISIONED ***");
-    Serial.println("Use 'N' command: e.g. N050101019422");
-    while (true) { /* handle 'N' provisioning command; do not join LCC */ }
+    Serial.println("*** Node identity not provisioned in protected NVM ***");
+    Serial.println("Using built-in default ID for this boot. Provision a permanent ID with 'N<12-hex-digit-id>' then 'Y' to confirm.");
+    node_id = NODE_ID_DEFAULT;   // legacy hardcoded ID this project shipped with previously
 }
 OpenLcbUserConfig_node_id = OpenLcbConfig_create_node(node_id, &OpenLcbUserConfig_node_parameters);
 ```
+
+**Deviation from the original design**: the design session this section is
+based on called for halting in a `while(true)` loop until provisioned, to
+force deliberate provisioning during multi-node batch flashing. The shipped
+implementation instead **falls back to a legacy `NODE_ID_DEFAULT` constant
+and warns, without halting**. Reason: every existing node in this family
+already runs with a real, assigned hardcoded ID — the first boot after this
+firmware update would find the identity block unprovisioned (blank EEPROM
+region) on every one of them, and halting would silently turn a routine
+firmware update into a fleet-wide outage requiring serial intervention on
+each node. The warn-and-continue fallback preserves continuity for already-
+deployed nodes while still gaining survive-a-wipe protection going forward.
+When flashing a *new* batch of boards from one compiled image, give each a
+distinct `NODE_ID_DEFAULT` before compiling, or provision each via `'N'`
+immediately after first boot — don't rely on the shared fallback ID for more
+than one node at a time.
 
 **`'N'` provisioning command** (serial handler, always available — not just
 on first boot, so a mis-provisioned node can be corrected without a factory
@@ -454,9 +470,9 @@ build once more than a couple of nodes need flashing in one sitting.
 - **Do not change**: `config_mem_helper.cpp`, the wipe commands, or the
   driver's bounds checks
 
-**Status**: validated in `LCC_RPiPico_PixelLights`; not yet ported to
-Turntable, Roundhouse, or Clock_Lights. Apply this pattern to each
-OpenLcbClib-based codebase as they're next touched, rather than all at once.
+**Status**: implemented in all four current node projects (Turntable,
+Roundhouse, Clock_Lights, PixelLights) as of 2026-06-20. New OpenLcbClib-based
+nodes should include this from the start rather than adding it later.
 
 ## 8. Dual-Core Contract
 
@@ -574,3 +590,4 @@ This is an OpenLCB (LCC) node that <one-line purpose>.
 | 2026-06-20 | Initial version, derived from Turntable, Roundhouse, Clock_Lights, PixelLights as they exist today |
 | 2026-06-20 | Added §7.1 protected NVM region: node identity block design (from PixelLights design session) plus reserved headroom and an offset registry for future persistent items |
 | 2026-06-20 | Added v3.0 generic node + breakout-pinout tables (§6.1); marked `STEPPER` family legacy/frozen in §4; cleaned up table formatting and a duplicated pin entry — ragged v2.5–v3.0 I/O-2/I/O-3 table cells in §5 still need correct values filled in |
+| 2026-06-20 | `board_configs/BoardPins_Node_v30.h` added to all four projects (CONFIG_MEM_SIZE shrunk to 32704 to fit §7.1's protected region). Protected NVM identity block (§7.1) implemented in all four projects, with one deviation from the original design — warn-and-fallback instead of halt-on-unprovisioned, documented in §7.1. Turntable's v3.0 SPI-display + TMC2209 breakout combo implemented in `NodeConfig.h`; the parallel-display combo is blocked pending resolution of a real pin conflict (D_WR/D_D-C/D_BL vs. v3.0's I/O-3 VREF/button wiring) — do not attempt until that's reconciled. |
