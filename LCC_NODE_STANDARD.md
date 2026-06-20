@@ -305,14 +305,16 @@ instead of a GPIO signal.
 | I/O-3:Pin1 | Stepper Direction (common w/IO2-10)|
 | I/O-3:Pin2 | D_WR |
 | I/O-3:Pin3 | AGND |
-| I/O-3:Pin4 | D_D/C |
-| I/O-3:Pin5 | VREF |
+| I/O-3:Pin4 | VREF |
+| I/O-3:Pin5 | D_D/C |
 | I/O-3:Pin6 | Ground |
 
-> `I/O-3:Pin1` is unassigned in this layout — confirm and fill in if it
-> carries a signal (the prior draft listed "Stepper Direction" here, which
-> duplicates I/O-2:Pin10 and looks like a copy/paste leftover; removed
-> pending confirmation).
+> Corrected 2026-06-20: the original breakout design had Pin4/Pin5 transposed
+> (D_D/C was assigned to the VREF pin). The table above now matches the v3.0
+> board's actual I/O-3 wiring: Pin4 stays VREF (analog reference, not used by
+> this breakout) and Pin5 carries D_D/C (gp28, shared with `GOLD_BUTTON_PIN`
+> — Gold button is unavailable when this breakout is in use). See §3's
+> Turntable `NodeConfig.h` for the implemented mapping.
 
 When a new breakout is introduced, add a row here and reference it from the
 new board family's `LCC_BOARD_<FAMILY>_V<NN>` naming.
@@ -590,4 +592,5 @@ This is an OpenLCB (LCC) node that <one-line purpose>.
 | 2026-06-20 | Initial version, derived from Turntable, Roundhouse, Clock_Lights, PixelLights as they exist today |
 | 2026-06-20 | Added §7.1 protected NVM region: node identity block design (from PixelLights design session) plus reserved headroom and an offset registry for future persistent items |
 | 2026-06-20 | Added v3.0 generic node + breakout-pinout tables (§6.1); marked `STEPPER` family legacy/frozen in §4; cleaned up table formatting and a duplicated pin entry — ragged v2.5–v3.0 I/O-2/I/O-3 table cells in §5 still need correct values filled in |
-| 2026-06-20 | `board_configs/BoardPins_Node_v30.h` added to all four projects (CONFIG_MEM_SIZE shrunk to 32704 to fit §7.1's protected region). Protected NVM identity block (§7.1) implemented in all four projects, with one deviation from the original design — warn-and-fallback instead of halt-on-unprovisioned, documented in §7.1. Turntable's v3.0 SPI-display + TMC2209 breakout combo implemented in `NodeConfig.h`; the parallel-display combo is blocked pending resolution of a real pin conflict (D_WR/D_D-C/D_BL vs. v3.0's I/O-3 VREF/button wiring) — do not attempt until that's reconciled. |
+| 2026-06-20 | `board_configs/BoardPins_Node_v30.h` added to all four projects (CONFIG_MEM_SIZE shrunk to 32704 to fit §7.1's protected region). Protected NVM identity block (§7.1) implemented in all four projects, with one deviation from the original design — warn-and-fallback instead of halt-on-unprovisioned, documented in §7.1. Turntable's v3.0 SPI-display + TMC2209 breakout combo implemented in `NodeConfig.h`. |
+| 2026-06-20 | Corrected the §6.1 Parallel Display — Capacitive Touch breakout table: D_D/C and VREF were transposed on I/O-3 Pin4/Pin5 in the original breakout design (confirmed by the breakout's designer). Table and Turntable's `NodeConfig.h`/`display_configs/DisplayConfig_SSD1963_parallel_v30.h` now match the corrected wiring; the parallel-display combo (`TURNTABLE_BREAKOUT_PARALLEL_TMC2209`) is implemented and no longer blocked. |
