@@ -29,6 +29,7 @@ rather than restate these rules.
 5. [Pin Assignment Registry](#5-pin-assignment-registry)
 6. [Breakout Board Catalog](#6-breakout-board-catalog)
 7. [Configuration Memory (CDI/EEPROM) Conventions](#7-configuration-memory-cdieeprom-conventions)
+   - [7.1 Protected NVM Region (above CONFIG_MEM_SIZE)](#71-protected-nvm-region-above-config_mem_size)
 8. [Dual-Core Contract](#8-dual-core-contract)
 9. [Naming Conventions](#9-naming-conventions)
 10. [OpenLCB Integration Rules](#10-openlcb-integration-rules)
@@ -261,6 +262,119 @@ new board family's `LCC_BOARD_<FAMILY>_V<NN>` naming.
   `BoardSettings.h` next to the board dispatch — keep this block in sync
   across projects unless a node has a specific reason to diverge.
 
+### 7.1 Protected NVM Region (above `CONFIG_MEM_SIZE`)
+
+CDI-driven config memory (above) is wiped wholesale by the `c`/`r` serial
+commands and by a CDI/struct layout change bumping `EEPROM_VERSION`. Some
+data must survive *both* of those — most importantly the node's own LCC
+identity — so it lives in a **separate, protected region** above
+`CONFIG_MEM_SIZE`, out of reach of the config wipe/reset bounds checks.
+
+**Size constraint**: `CONFIG_MEM_SIZE` must be **less than** `I2C_DEVICESIZE`
+(or the internal-flash-emulation size) by enough bytes to fit the protected
+region. The existing driver bounds check
+(`if (address > CONFIG_MEM_SIZE - 1)`) already keeps config-memory wipes from
+reaching anything above it — that's the mechanism this region relies on; do
+not change the wipe commands or `config_mem_helper.cpp` bounds checks to
+"fix" this, they're protecting the gap by design.
+
+Reserve **64 bytes** above `CONFIG_MEM_SIZE` for this region (not just the 12
+bytes the identity block needs) so future protected items — calibration
+constants that shouldn't reset with config, a provisioning/lock flag, a
+per-node serial number distinct from the LCC node ID, etc. — have a place to
+go without another `CONFIG_MEM_SIZE` shrink and a `NODE_IDENTITY_ADDR`
+renumbering. Lay it out as a fixed registry, append-only, each item at a
+defined offset/size so the offsets never shift as new items get added:
+
+| Offset (from `CONFIG_MEM_SIZE`) | Size | Item | Status |
+|---|---|---|---|
+| `+0` | 12 bytes | Node identity block (`node_identity_t` — magic, 6-byte node ID, CRC) | implemented (PixelLights) |
+| `+12` | 52 bytes | Reserved for future protected items | unallocated |
+
+When a new protected item is needed, claim the next unused offset, document
+it in this table with its status, and shrink the "Reserved" row accordingly.
+Never reuse or repack existing offsets — that's what makes the layout safe
+to share across a fleet of nodes provisioned at different firmware versions.
+
+**Node identity block structure** (current implementation, validated in
+PixelLights — see that project's memory for full design rationale):
+
+```c
+// NodeIdentity.h
+#define NODE_IDENTITY_MAGIC  0xDEADBEEF
+#define NODE_IDENTITY_ADDR   CONFIG_MEM_SIZE  // first address above config space
+
+#pragma pack(push, 1)
+typedef struct {
+    uint32_t magic;      // NODE_IDENTITY_MAGIC when provisioned
+    uint8_t  node_id[6]; // 6-byte big-endian node ID
+    uint16_t crc;        // simple XOR checksum over magic + node_id
+} node_identity_t;       // 12 bytes
+#pragma pack(pop)
+```
+
+**Startup flow** (replaces a hardcoded `#define NODE_ID`):
+
+```c
+uint64_t node_id = NodeIdentity_read();  // reads NVM at NODE_IDENTITY_ADDR
+if (node_id == 0) {
+    Serial.println("*** NODE ID NOT PROVISIONED ***");
+    Serial.println("Use 'N' command: e.g. N050101019422");
+    while (true) { /* handle 'N' provisioning command; do not join LCC */ }
+}
+OpenLcbUserConfig_node_id = OpenLcbConfig_create_node(node_id, &OpenLcbUserConfig_node_parameters);
+```
+
+**`'N'` provisioning command** (serial handler, always available — not just
+on first boot, so a mis-provisioned node can be corrected without a factory
+reset) — two-step with confirmation to prevent accidental node ID changes:
+
+```
+N050101019422        → node replies "Confirm with 'Y' to write 05:01:01:01:94:22"
+Y                    → node writes identity block, reboots
+(anything else)      → cancelled
+```
+
+This `'N'` command joins the serial CLI letters in [§11](#11-serial-cli-conventions)
+and must not collide with the existing table there.
+
+**NVM survival by storage type**:
+
+| Storage | Survives UF2 reflash? | Survives `picotool` full-chip write? |
+|---|---|---|
+| External I2C EEPROM/FRAM | Yes — physically separate chip | Yes |
+| Internal flash EEPROM emulation | Yes — Arduino EEPROM region excluded from UF2 | No |
+
+**Multi-node flashing workflow**:
+
+1. Compile **once** — the same `.uf2` flashes onto every board in a batch.
+2. For each board: BOOTSEL+USB → drag UF2 (or `picotool load`) → board boots
+   and prints "NODE ID NOT PROVISIONED" → send `N<nodeid>` → confirm `Y` →
+   board writes the identity block and reboots → verify it appears on LCC
+   with the correct ID → increment the last byte(s) for the next board.
+3. Future firmware updates: flash the new UF2 — the node ID survives, the
+   board comes up normally without re-provisioning.
+
+A `provision_nodes.py` script that auto-increments the node ID and sends the
+provisioning command to each serial port in sequence is the natural tool to
+build once more than a couple of nodes need flashing in one sitting.
+
+**Files to create/modify per codebase**:
+
+- **New**: `NodeIdentity.h` / `NodeIdentity.cpp` — read/write the identity
+  block (and any other protected-region items) via the existing NVM driver
+- **Modify**: `BoardSettings.h` — reduce `CONFIG_MEM_SIZE` to leave room for
+  the protected region
+- **Modify**: main `.ino` — replace `#define NODE_ID` with `NodeIdentity_read()`
+- **Modify**: serial handler in `loop()` — add the `'N'` command with
+  two-step confirm
+- **Do not change**: `config_mem_helper.cpp`, the wipe commands, or the
+  driver's bounds checks
+
+**Status**: validated in `LCC_RPiPico_PixelLights`; not yet ported to
+Turntable, Roundhouse, or Clock_Lights. Apply this pattern to each
+OpenLcbClib-based codebase as they're next touched, rather than all at once.
+
 ## 8. Dual-Core Contract
 
 - **Core 0** (`setup()`/`loop()`): OpenLCB protocol, CAN comms, event
@@ -326,6 +440,7 @@ keep these consistent and don't repurpose them for node-specific commands:
 | `m` | Toggle config memory logging |
 | `x` | Load app defaults |
 | `z` | Re-apply config values from NVM |
+| `N` | Provision/re-provision node identity block (see [§7.1](#71-protected-nvm-region-above-config_mem_size)) — two-step with `Y` confirm |
 
 Node-specific commands (e.g. Roundhouse's `t`/`q` for fast-clock query) are
 fine to add — just don't collide with the table above, and document new
@@ -374,3 +489,4 @@ This is an OpenLCB (LCC) node that <one-line purpose>.
 | Date | Change |
 |---|---|
 | 2026-06-20 | Initial version, derived from Turntable, Roundhouse, Clock_Lights, PixelLights as they exist today |
+| 2026-06-20 | Added §7.1 protected NVM region: node identity block design (from PixelLights design session) plus reserved headroom and an offset registry for future persistent items |
