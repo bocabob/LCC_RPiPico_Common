@@ -42,7 +42,7 @@ rather than restate these rules.
 ## 1. Purpose & Scope
 
 Every node in this family shares one base hardware platform (the RPi Pico
-"Node board," currently at revisions v2.5–v2.95) plus a swappable breakout
+"Node board," currently at revisions v2.5–v3.0) plus a swappable breakout
 board for the node's specific job (stepper driver, servo driver, display,
 NeoPixel strip, etc.). The software stack on top is the same OpenLCB C
 library and the same handful of Arduino libraries on every node. What varies
@@ -143,10 +143,13 @@ mdebugging.h               ← shared dP()/dPH()/dPS() debug macro family,
   uncomment exactly one `LCC_BOARD_<FAMILY>_V<NN>` line. Step 2 (when the
   board has a display header): uncomment exactly one `DISPLAY_DRIVER_*` line."
 - Board macro naming: `LCC_BOARD_<FAMILY>_V<NN>`, where `<FAMILY>` identifies
-  the breakout combination (`NODE` for the generic node board with no
-  dedicated breakout, `STEPPER` for Node board + TMC2209/stepper breakout,
-  and so on as new families are added), and `<NN>` is the board revision
-  (`25`, `26`, `27`, `28`, `29`, `295` for v2.95).
+  the breakout combination and `<NN>` is the board revision (`25`, `26`,
+  `27`, `28`, `29`, `295` for v2.95, `30`). `NODE` is the generic node board
+  with no dedicated breakout — this is the only family going forward as of
+  v3.0 (see [§5](#5-pin-assignment-registry)). `STEPPER` (Node board +
+  integrated TMC2209/display, v2.4–v2.95) is **legacy and frozen** — do not
+  add new `STEPPER` revisions; new stepper nodes use a generic `NODE` board
+  plus the TMC2209 breakout (see [§6](#6-breakout-board-catalog)).
 - Each macro maps to exactly one `board_configs/BoardPins_<Family>_v<NN>.h`,
   selected via `#if defined(...) / #elif / #error` chain in `BoardSettings.h`.
   The `#error` fallback is mandatory — a project must fail to compile rather
@@ -184,21 +187,24 @@ unless a board header explicitly says otherwise; treat **connector pins**
 
 ### Node board family (generic; no dedicated breakout)
 
-| Function | v2.5 | v2.6 | v2.7 | v2.8 | v2.9 |
-|---|---|---|---|---|---|
-| CAN (MCP2517/18, SPI) | gp16-20 | gp16-20 | gp16-20 | gp0-4 | gp0-4 |
-| I2C storage (EEPROM) | I2C1 gp26/27 | gp26/27 | — | I2C1 gp6/7 | I2C1 gp6/7 |
-| Secondary I2C | — | — | — | I2C0 gp16/17 | — |
-| Dedicated NeoPixel pins | gp2/3/6/7 | gp2/3/6/7 | none (I/O headers only) | none | none |
-| Dedicated servo pins | — | — | — | — | none (v2.9 removed) |
-| Buttons (Blue/Gold) | gp21/gp22 | gp21/gp22 | gp21/gp22 | gp21/gp22 | gp21/gp22 (shared w/ IO2 pins 8/9) |
+| Function | v2.5 | v2.6 | v2.7 | v2.8 | v2.9 | v3.0 |
+|---|---|---|---|---|---|---|
+| CAN (MCP2517/18, SPI) | gp16-20 | gp16-20 | gp16-20 | gp0-4 | gp0-4 | gp0-4 |
+| I2C storage (EEPROM) | I2C1 gp26/27 | gp26/27 | — | I2C1 gp6/7 | I2C1 gp6/7 | I2C1 gp6/7 |
+| Secondary I2C | — | — | — | I2C0 gp16/17 | — | — |
+| Dedicated NeoPixel pins | gp2/3/6/7 | gp2/3/6/7 | none (I/O headers only) | none | none | none |
+| Dedicated servo pins | — | — | — | — | none (v2.9 removed) | none |
+| Buttons (Blue/Gold) | gp21/gp22 | gp21/gp22 | gp21/gp22 | gp21/gp22 | gp21/gp22 (shared w/ IO2 pins 8/9) | gp5 (shared w/IO2 pin 10)/gp28 (shared w/IO3 pin 5)
+| I/O - 1 | gp15-8 |gp15-8|gp0-7|gp8-15|gp8-15|gp8-15
+| I/O - 2 |  ||gp8-15|gp18-28|gp16-26|gp16-22, 5|
+| I/O - 3 |||||gp26-28|gp26-28
 
 > Fill in v2.5–v2.8 columns from each board's `BoardPins_Node_v*.h` as they're
-> revisited; v2.9 is current as of this writing (see
-> `LCC_RPiPico_PixelLights/board_configs/BoardPins_Node_v29.h`).
+> revisited; v3.0 is current as of this writing (see
+> `BoardPins_Node_v30.h` once added per project — not yet created in any repo).
 
-### Stepper family (Node board + stepper breakout)
-
+### Stepper family (Node board w/ integrated stepper & display or breakout)
+Stepper family nodes are depreciated with v3.0 adopting a generic node with functional breakout boards.
 | Function | v2.4 | v2.7 | v2.9 | v2.95 |
 |---|---|---|---|---|
 | Display controller | SSD1963 (8-bit parallel, 800×480) | RA8876 (SPI, 1024×600) | RA8876 (SPI, 1024×600) | RA8876/LT7381 native (SPI1, 1024×600) |
@@ -230,6 +236,83 @@ instead of a GPIO signal.
 | SSD1963 display | 8-bit parallel | n/a | Turntable v2.4 only | Legacy; superseded by RA8876-based boards |
 | XPT2046 touch controller | SPI or I2C depending on board | `TOUCH_SDA`/`TOUCH_SCL` or SPI pins | Turntable, Clock_Lights (v2.95) | v2.95 wires touch via I2C0 (Wire) regardless of display bus |
 | NeoPixel strip (direct GPIO) | single-wire | n/a | PixelLights, Clock_Lights, Roundhouse (optional) | Pin(s) named `NeoPixel_PinA/B/C/D`, defined per board header or `NodeConfig.h` |
+
+### 6.1 Breakout Pin Assignments
+#### TMC2209 stepper breakout
+| Pin | Signal |
+|---|---|
+| I/O-2:Pin1 | SDA |
+| I/O-2:Pin2 | SCL |
+| I/O-2:Pin3 | Bridge Sensor |
+| I/O-2:Pin4 | Home Sensor |
+| I/O-2:Pin5 | Ground |
+| I/O-2:Pin6 | +3.3 Vin |
+| I/O-2:Pin7 | NeoPixel Data |
+| I/O-2:Pin8 | Stepper Enable |
+| I/O-2:Pin9 | Stepper Step |
+| I/O-2:Pin10 | Stepper Direction |
+
+#### SPI Display — XPT2046 Resistive Touch
+| Pin | Signal |
+|---|---|
+| I/O-1:Pin1 | D_SDO/RX |
+| I/O-1:Pin2 | D_CS |
+| I/O-1:Pin3 | D_CLK |
+| I/O-1:Pin4 | D_SDI/TX |
+| I/O-1:Pin5 | Ground |
+| I/O-1:Pin6 | + Vin (3.3 or 5V) |
+| I/O-1:Pin7 | RTP_DOUT |
+| I/O-1:Pin8 | RTP_CS |
+| I/O-1:Pin9 | D_RST |
+| I/O-1:Pin10 | open |
+
+#### SPI Display — Capacitive Touch
+| Pin | Signal |
+|---|---|
+| I/O-1:Pin1 | D_SDO/RX |
+| I/O-1:Pin2 | D_CS |
+| I/O-1:Pin3 | D_CLK |
+| I/O-1:Pin4 | D_SDI/TX |
+| I/O-1:Pin5 | Ground |
+| I/O-1:Pin6 | + Vin (3.3 or 5V) |
+| I/O-1:Pin7 | T_SDA |
+| I/O-1:Pin8 | T_SCL |
+| I/O-1:Pin9 | D_RST / T_RST |
+| I/O-1:Pin10 | D_BL / T_RST / T_INT |
+
+#### Parallel Display — Capacitive Touch
+| Pin | Signal |
+|---|---|
+| I/O-1:Pin1 | DB0 |
+| I/O-1:Pin2 | DB1 |
+| I/O-1:Pin3 | DB2 |
+| I/O-1:Pin4 | DB3 |
+| I/O-1:Pin5 | Ground |
+| I/O-1:Pin6 | + 5V |
+| I/O-1:Pin7 | DB4 |
+| I/O-1:Pin8 | DB5 |
+| I/O-1:Pin9 | DB6 |
+| I/O-1:Pin10 | DB7 |
+| I/O-2:Pin1 | T_SDA |
+| I/O-2:Pin2 | T_SCL |
+| I/O-2:Pin3 | Bridge Sensor |
+| I/O-2:Pin4 | Home Sensor / D_RST |
+| I/O-2:Pin5 | Ground |
+| I/O-2:Pin6 | + 3.3 V |
+| I/O-2:Pin7 | NeoPixel Data |
+| I/O-2:Pin8 | Stepper Enable |
+| I/O-2:Pin9 | Stepper Step |
+| I/O-2:Pin10 | Stepper Direction |
+| I/O-3:Pin2 | D_WR |
+| I/O-3:Pin3 | AGND |
+| I/O-3:Pin4 | D_D/C |
+| I/O-3:Pin5 | VREF |
+| I/O-3:Pin6 | Ground |
+
+> `I/O-3:Pin1` is unassigned in this layout — confirm and fill in if it
+> carries a signal (the prior draft listed "Stepper Direction" here, which
+> duplicates I/O-2:Pin10 and looks like a copy/paste leftover; removed
+> pending confirmation).
 
 When a new breakout is introduced, add a row here and reference it from the
 new board family's `LCC_BOARD_<FAMILY>_V<NN>` naming.
@@ -490,3 +573,4 @@ This is an OpenLCB (LCC) node that <one-line purpose>.
 |---|---|
 | 2026-06-20 | Initial version, derived from Turntable, Roundhouse, Clock_Lights, PixelLights as they exist today |
 | 2026-06-20 | Added §7.1 protected NVM region: node identity block design (from PixelLights design session) plus reserved headroom and an offset registry for future persistent items |
+| 2026-06-20 | Added v3.0 generic node + breakout-pinout tables (§6.1); marked `STEPPER` family legacy/frozen in §4; cleaned up table formatting and a duplicated pin entry — ragged v2.5–v3.0 I/O-2/I/O-3 table cells in §5 still need correct values filled in |
