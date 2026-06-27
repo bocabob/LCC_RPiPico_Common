@@ -280,6 +280,30 @@ instead of a GPIO signal.
 | I/O-1:Pin9 | D_RST / T_RST |
 | I/O-1:Pin10 | D_BL / T_RST / T_INT |
 
+> **Shared RST gotcha** (found during Turntable v3.0 bring-up, 2026-06-21):
+> `D_RST`/`T_RST` are the *same physical pin* on this breakout. The touch
+> library's chip-type auto-detection (`BBCapTouch::reset()` in
+> `my_bb_captouch.cpp`) issues real 100ms-low/250ms-high reset pulses on
+> `TOUCH_RST` while probing for GT911/CHSC6540/AXS15231 — and since that's
+> the same pin as `DISPLAY_RST`, it also resets the RA8876/LT7381 display
+> controller back to power-on defaults. If touch init (`tp.init()`) runs
+> *after* display init (`tft.init()`), as it normally does, every subsequent
+> draw call succeeds (no error, no hang — the SPI bus and register-write
+> protocol still work) but produces **nothing visible**, because the
+> display chip's own timing/enable registers were silently reset.
+>
+> **Fix**: re-run `tft.init()` (and `tft.setRotation()`) immediately after
+> `tp.init()` returns, whenever `TOUCH_RST == DISPLAY_RST`. See
+> `LCC_RPiPico_Turntable/UserInterface.cpp`'s `setupDisplay()` for the
+> guarded (`#if (TOUCH_RST == DISPLAY_RST)`) implementation — apply the same
+> pattern to any other project/combo that shares these pins on this
+> breakout. Symptom to watch for: display reports a clean init (correct
+> chip ID, "Display initialization complete!") and the app's own setup
+> functions all return normally with no hang, but the screen stays
+> completely blank (not even a black-on-black ambiguity — diagnostic fills
+> in *non-black* colors, tested **before** touch init, also fail to show
+> once the page-drawing code runs **after** touch init).
+
 #### Parallel Display — Capacitive Touch
 | Pin | Signal |
 |---|---|
@@ -668,3 +692,4 @@ This is an OpenLCB (LCC) node that <one-line purpose>.
 | 2026-06-21 | First hardware test of v3.0 (Clock_Lights). Fixed a `case 't':` switch-scope compile error introduced by §7.1's `'N'`/`'Y'` cases in Roundhouse/PixelLights/Clock_Lights (Turntable unaffected — no `case 't':` there); added the missing `NodeConfig.h` functional pin layer for Clock_Lights on v3.0 (carried over from `BoardPins_Node_v295.h` — display/touch/NeoPixel pins are unchanged between v2.95 and v3.0); hardened `NodeIdentity_write()` with a post-write `delay(20)` + read-back verification after observing a real EEPROM write-settling issue (first reboot after provisioning came up with the fallback default ID, second reboot read correctly). |
 | 2026-06-21 | Turntable v3.0 SPI+TMC2209 bring-up: fixed `TOUCH_INT` in `NodeConfig.h` to use `-1` (the touch library's own "not connected" sentinel) instead of `UNUSED_PIN`(127) — `my_bb_captouch.cpp`'s GT911 sleep/wake path checks `_iINT != -1` specifically and would otherwise drive a nonexistent GPIO 127. Found and fixed a real hang/memory-corruption bug in `Set_Application_Values_From_Config()` (`config_mem_helper.cpp`): `TrackCount`/`DoorCount` were read from NVM with no bounds check and used directly as loop bounds/array indices into the fixed-size `Tracks[MAX_TRACKS]`/`doors[MAX_DOORS]` arrays — stale/incompatible NVM data caused an out-of-bounds write that hung the node during `setup1()`. Both counts are now clamped to their array bounds before use. |
 | 2026-06-21 | Added §7.2 Factory Reset Button Gesture: hold Blue+Gold for 2s at boot to wipe and reinitialize config memory (does not touch the §7.1 protected identity region). Implemented identically in all four projects via a new `_check_factory_reset_gesture()` called from `setup()`. Flagged a real caveat: the `#if defined(...)` guard does not actually skip the gesture on combos where Blue/Gold are reassigned to another function, since the macros stay defined either way — don't rely on it being safe to use on such combos. |
+| 2026-06-21 | Diagnosed Turntable v3.0 SPI+TMC2209 "blank screen" bug: `TOUCH_RST`/`DISPLAY_RST` share a physical pin on the SPI Display — Capacitive Touch breakout (§6.1), and the touch library's chip-type auto-detection resets that shared pin — silently resetting the display controller back to power-on defaults *after* `tft.init()` already configured it, with nothing re-applying that config afterward. Fixed in `UserInterface.cpp`'s `setupDisplay()` by re-running `tft.init()`/`setRotation()` right after `tp.init()` whenever the pins are shared. Documented as a gotcha under §6.1's SPI Display table for any future combo sharing these pins. |
