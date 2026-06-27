@@ -30,6 +30,7 @@ rather than restate these rules.
 6. [Breakout Board Catalog](#6-breakout-board-catalog)
 7. [Configuration Memory (CDI/EEPROM) Conventions](#7-configuration-memory-cdieeprom-conventions)
    - [7.1 Protected NVM Region (above CONFIG_MEM_SIZE)](#71-protected-nvm-region-above-config_mem_size)
+   - [7.2 Factory Reset Button Gesture](#72-factory-reset-button-gesture)
 8. [Dual-Core Contract](#8-dual-core-contract)
 9. [Naming Conventions](#9-naming-conventions)
 10. [OpenLCB Integration Rules](#10-openlcb-integration-rules)
@@ -478,6 +479,73 @@ build once more than a couple of nodes need flashing in one sitting.
 Roundhouse, Clock_Lights, PixelLights) as of 2026-06-20. New OpenLcbClib-based
 nodes should include this from the start rather than adding it later.
 
+### 7.2 Factory Reset Button Gesture
+
+A hardware equivalent of the `'r'`+`'i'` serial commands: **hold Blue + Gold
+together for 2 seconds at boot** to wipe configuration memory and reinitialize
+it to CDI defaults — useful when a node has no convenient serial connection
+in the field (already installed under a layout, etc.).
+
+**Implementation** (`_check_factory_reset_gesture()` in the `.ino`, called
+once in `setup()` right after `OpenLcbConfig_create_node()` and before
+`_check_for_nvm_initialization()`):
+
+```c
+void _check_factory_reset_gesture(void) {
+#if defined(BLUE_BUTTON_PIN) && defined(GOLD_BUTTON_PIN)
+  pinMode(BLUE_BUTTON_PIN, INPUT_PULLUP);
+  pinMode(GOLD_BUTTON_PIN, INPUT_PULLUP);
+
+  if (digitalRead(BLUE_BUTTON_PIN) != LOW || digitalRead(GOLD_BUTTON_PIN) != LOW) {
+    return;  // not held — normal boot
+  }
+
+  Serial.println("Blue+Gold held at boot — hold 2s to wipe and reinitialize NVM (release to cancel)...");
+  uint32_t startMs = millis();
+  while (digitalRead(BLUE_BUTTON_PIN) == LOW && digitalRead(GOLD_BUTTON_PIN) == LOW) {
+    if (millis() - startMs >= 2000) {
+      Serial.println("Wiping configuration memory to factory defaults...");
+      ConfigMemHelper_reset_config_mem();
+      ConfigMemHelper_reset_and_write_default(OpenLcbUserConfig_node_id);
+      Serial.println("NVM wiped and reinitialized. Continuing boot...");
+      return;
+    }
+    delay(20);
+  }
+  Serial.println("Released early — factory reset cancelled.");
+#endif
+}
+```
+
+**Design notes**:
+
+- **Active-low, `INPUT_PULLUP`**: buttons are assumed wired as a momentary
+  switch to ground, matching how Blue/Gold are described everywhere else in
+  this family (§5, §6). No existing project code read these pins before this
+  feature, so there was no prior convention to break.
+- **2-second hold, not a tap**: a brief press (e.g. accidentally bumping both
+  pads while handling the board) must not wipe a configured node. The hold
+  loop polls every 20ms and bails immediately on early release, with no
+  partial/in-between state.
+- **Does not touch the protected identity region**: `ConfigMemHelper_reset_config_mem()`
+  and `ConfigMemHelper_reset_and_write_default()` only operate within
+  `CONFIG_MEM_SIZE` bounds (§7.1's whole point) — node ID survives this
+  gesture exactly like it survives `'r'`/`'i'`.
+- **Silently unavailable when the pins are shared away**: on board/breakout
+  combos where `BLUE_BUTTON_PIN`/`GOLD_BUTTON_PIN` are reassigned to another
+  function (e.g. Turntable's v3.0 combos share `BLUE_BUTTON_PIN` with
+  `STEPPER_DIR_PIN`, and the parallel-display combo shares `GOLD_BUTTON_PIN`
+  with `DISPLAY_DC_PIN` — see §6.1), the macros are still `#define`d (just
+  pointing at a repurposed pin), so the `#if defined(...)` guard does not
+  actually skip the gesture on these combos today. Holding the underlying pins
+  low during boot on such a combo will still trigger the wipe, and doing so
+  may also interfere with whatever the breakout is doing with that pin at
+  power-up. **Don't rely on this gesture being safe to use on a combo where
+  Blue/Gold are documented as "unavailable"** — it works mechanically but
+  isn't a clean button press in that case.
+
+**Status**: implemented in all four current node projects as of 2026-06-21.
+
 ## 8. Dual-Core Contract
 
 - **Core 0** (`setup()`/`loop()`): OpenLCB protocol, CAN comms, event
@@ -598,3 +666,5 @@ This is an OpenLCB (LCC) node that <one-line purpose>.
 | 2026-06-20 | Corrected the §6.1 Parallel Display — Capacitive Touch breakout table: D_D/C and VREF were transposed on I/O-3 Pin4/Pin5 in the original breakout design (confirmed by the breakout's designer). Table and Turntable's `NodeConfig.h`/`display_configs/DisplayConfig_SSD1963_parallel_v30.h` now match the corrected wiring; the parallel-display combo (`TURNTABLE_BREAKOUT_PARALLEL_TMC2209`) is implemented and no longer blocked. |
 | 2026-06-20 | Fixed `board_configs/BoardPins_Node_v30.h` in all four projects: the header comment and `IO1_PIN5/PIN6`/`IO2_PIN5/PIN6` sentinel assignments had Pin5/Pin6 backwards (claimed Pin5=VCC, Pin6=GND). Confirmed against the hardware repo's "LCC Pico Board Overview" doc: Pin5=GND, Pin6=Vselect (jumper-selectable 3.3V/5V). `LCC-RPi-Pico-Board` README's pin table already matched the correct convention. |
 | 2026-06-21 | First hardware test of v3.0 (Clock_Lights). Fixed a `case 't':` switch-scope compile error introduced by §7.1's `'N'`/`'Y'` cases in Roundhouse/PixelLights/Clock_Lights (Turntable unaffected — no `case 't':` there); added the missing `NodeConfig.h` functional pin layer for Clock_Lights on v3.0 (carried over from `BoardPins_Node_v295.h` — display/touch/NeoPixel pins are unchanged between v2.95 and v3.0); hardened `NodeIdentity_write()` with a post-write `delay(20)` + read-back verification after observing a real EEPROM write-settling issue (first reboot after provisioning came up with the fallback default ID, second reboot read correctly). |
+| 2026-06-21 | Turntable v3.0 SPI+TMC2209 bring-up: fixed `TOUCH_INT` in `NodeConfig.h` to use `-1` (the touch library's own "not connected" sentinel) instead of `UNUSED_PIN`(127) — `my_bb_captouch.cpp`'s GT911 sleep/wake path checks `_iINT != -1` specifically and would otherwise drive a nonexistent GPIO 127. Found and fixed a real hang/memory-corruption bug in `Set_Application_Values_From_Config()` (`config_mem_helper.cpp`): `TrackCount`/`DoorCount` were read from NVM with no bounds check and used directly as loop bounds/array indices into the fixed-size `Tracks[MAX_TRACKS]`/`doors[MAX_DOORS]` arrays — stale/incompatible NVM data caused an out-of-bounds write that hung the node during `setup1()`. Both counts are now clamped to their array bounds before use. |
+| 2026-06-21 | Added §7.2 Factory Reset Button Gesture: hold Blue+Gold for 2s at boot to wipe and reinitialize config memory (does not touch the §7.1 protected identity region). Implemented identically in all four projects via a new `_check_factory_reset_gesture()` called from `setup()`. Flagged a real caveat: the `#if defined(...)` guard does not actually skip the gesture on combos where Blue/Gold are reassigned to another function, since the macros stay defined either way — don't rely on it being safe to use on such combos. |
