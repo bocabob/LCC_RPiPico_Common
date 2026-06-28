@@ -304,30 +304,47 @@ instead of a GPIO signal.
 > in *non-black* colors, tested **before** touch init, also fail to show
 > once the page-drawing code runs **after** touch init).
 
-> **`fillScreen()` gotcha** (found during the same bring-up, 2026-06-21, once
-> the blank-screen issue above was fixed): the native `RA8876_RP2040`
-> library's `fillScreen()` (`RA8876_common::fillScreen()`) calls
-> `drawSquareFill()` **directly** against the chip's GE — it does *not* go
-> through `TT_Display`'s hardened `fillRect()` override (the one with the
-> documented `w==1`/`w==0`/`h==0` degenerate-case guards) and was never
-> independently verified to work reliably at full-panel size on this chip.
-> Symptom: stray old/residual GRAM content (in one case, literally the tail
-> end of the node's own CDI XML, presumably left over from an earlier
-> test/sketch on the same physical panel) stayed visible in part of the
-> screen — appearing once at boot, never again, since nothing else happens
-> to redraw that exact spot afterward.
+> **Stray "CDI text on screen" bug — two wrong theories before the real one**
+> (found during the same bring-up, 2026-06-21, once the blank-screen issue
+> above was fixed). Symptom: a line of text resembling the tail of the
+> node's own CDI XML (literally `</name></eventid></group></segment></cdi>`
+> in one capture) appeared once at boot in otherwise-empty screen regions,
+> never again on later redraws.
 >
-> An initial theory — that the scroll/margin window
-> (`_scrollXL`/`_scrollYT`/`_scrollXR`/`_scrollYB`) was never set to the real
-> panel size, so `fillScreen()` only cleared part of it — turned out to be
-> wrong: this library's `HDW`/`VDH` globals are hardcoded to 1024/600,
-> already matching this panel, so the margin defaults were already correct
-> and `setMargins()` was a no-op. The actual fix: **override `fillScreen()`
-> in `TT_Display` to route through `fillRect(0, 0, _width, _height, color)`**
-> instead of inheriting the unverified base-class implementation — i.e. don't
-> trust *any* GE call on this chip that hasn't been independently exercised,
-> even ones that look as simple as "clear the whole screen." See
-> `LCC_RPiPico_Turntable/DisplayDriver.h`'s `TT_Display::fillScreen()`.
+> Two display-library theories were tried and **disproven** — recorded here
+> so they aren't re-tried: (1) the scroll/margin window
+> (`_scrollXL`/`_scrollYT`/`_scrollXR`/`_scrollYB`) being unset to the real
+> panel size — wrong, this library's `HDW`/`VDH` globals are already
+> hardcoded to 1024/600, matching the panel. (2) `fillScreen()` bypassing the
+> hardened `fillRect()` override and failing on an unverified full-panel GE
+> call — overriding `fillScreen()` to route through `fillRect()` is still
+> good practice (kept in `TT_Display::fillScreen()`) but didn't change the
+> symptom at all, proving the screen-clear itself was never the problem.
+>
+> **Actual root cause**: `drawTracks()` (`UserInterface.cpp`) reads
+> `ConfigMemHelper_config_data.attributes.TrackCount` **directly**, with no
+> bounds check, and loops `for (int i = 1; i <= TrackCount; i++)` indexing
+> `Tracks[i]`/`tracks[i]` — arrays sized `MAX_TRACKS`. This is the *same*
+> class of bug as the §6.1-adjacent hang fixed earlier in
+> `Set_Application_Values_From_Config()`, except that fix only clamped a
+> *local copy* inside that one function — it never touched the underlying
+> NVM-sourced field, so every *other* unclamped read of `TrackCount`/
+> `DoorCount` elsewhere in the codebase (and there are many — `Turntable.cpp`,
+> `UserInterface.cpp`, `callbacks.cpp`) remained exposed. With a bad count,
+> `drawTracks()`'s out-of-bounds **read** rendered whatever happened to sit
+> in adjacent RAM as on-screen text via `drawString()` — which, unlike a
+> stray *write*, can legitimately surface recognizable content if anything
+> else (e.g. a protocol-stack buffer) keeps CDI text nearby in memory.
+>
+> **Fix**: clamp `TrackCount`/`DoorCount` to their real array bounds **once,
+> at the source** — inside `ConfigMemHelper_read()`, immediately after NVM
+> data is loaded into the struct — rather than re-deriving the same clamp at
+> every call site. Every unclamped loop throughout the codebase becomes safe
+> automatically. (`drawTracks()` also got a belt-and-suspenders local clamp,
+> since it's the specific function that was rendering the bad data.) The
+> lesson for any node holding NVM-sourced counts used as loop bounds: clamp
+> at the read boundary, not at each use — a fix applied to only one call
+> site silently leaves every other one exposed.
 
 #### Parallel Display — Capacitive Touch
 | Pin | Signal |
@@ -718,4 +735,4 @@ This is an OpenLCB (LCC) node that <one-line purpose>.
 | 2026-06-21 | Turntable v3.0 SPI+TMC2209 bring-up: fixed `TOUCH_INT` in `NodeConfig.h` to use `-1` (the touch library's own "not connected" sentinel) instead of `UNUSED_PIN`(127) — `my_bb_captouch.cpp`'s GT911 sleep/wake path checks `_iINT != -1` specifically and would otherwise drive a nonexistent GPIO 127. Found and fixed a real hang/memory-corruption bug in `Set_Application_Values_From_Config()` (`config_mem_helper.cpp`): `TrackCount`/`DoorCount` were read from NVM with no bounds check and used directly as loop bounds/array indices into the fixed-size `Tracks[MAX_TRACKS]`/`doors[MAX_DOORS]` arrays — stale/incompatible NVM data caused an out-of-bounds write that hung the node during `setup1()`. Both counts are now clamped to their array bounds before use. |
 | 2026-06-21 | Added §7.2 Factory Reset Button Gesture: hold Blue+Gold for 2s at boot to wipe and reinitialize config memory (does not touch the §7.1 protected identity region). Implemented identically in all four projects via a new `_check_factory_reset_gesture()` called from `setup()`. Flagged a real caveat: the `#if defined(...)` guard does not actually skip the gesture on combos where Blue/Gold are reassigned to another function, since the macros stay defined either way — don't rely on it being safe to use on such combos. |
 | 2026-06-21 | Diagnosed Turntable v3.0 SPI+TMC2209 "blank screen" bug: `TOUCH_RST`/`DISPLAY_RST` share a physical pin on the SPI Display — Capacitive Touch breakout (§6.1), and the touch library's chip-type auto-detection resets that shared pin — silently resetting the display controller back to power-on defaults *after* `tft.init()` already configured it, with nothing re-applying that config afterward. Fixed in `UserInterface.cpp`'s `setupDisplay()` by re-running `tft.init()`/`setRotation()` right after `tp.init()` whenever the pins are shared. Documented as a gotcha under §6.1's SPI Display table for any future combo sharing these pins. |
-| 2026-06-21 | Diagnosed a second Turntable v3.0 display bug, visible only after the above fix: stray CDI-XML-looking text appeared once at boot in unused screen regions. First theory (scroll/margin window never set to match the real panel size, fixed with `setMargins()`) was tested and disproven — this library's `HDW`/`VDH` globals are already hardcoded to 1024/600, matching the panel, so the margins were already correct. Actual fix: overrode `TT_Display::fillScreen()` to route through the already-verified `fillRect()` instead of inheriting `RA8876_common::fillScreen()`'s unverified direct GE call. Also hardened `config_mem_helper.cpp`'s `strncpy(dest, src, sizeof(dest))` calls for `trackName`/`trackShort` with explicit null-termination (a real but, on inspection, not-yet-triggered footgun — current default strings are all short enough to avoid it, but a user-typed CDI name long enough to fill the buffer would hit it, and the render path's `putString()` has no length bound at all). Documented the corrected `fillScreen()` gotcha under §6.1. |
+| 2026-06-21 | Diagnosed a second Turntable v3.0 display bug, visible only after the above fix: stray CDI-XML-looking text appeared once at boot in unused screen regions. Two display-library theories (unset scroll margins; unverified `fillScreen()`) were tried and disproven — kept the `fillScreen()`→`fillRect()` override anyway as good practice, but it wasn't the cause. Real root cause: `drawTracks()` read NVM-sourced `TrackCount` with no bounds check and indexed past the `MAX_TRACKS`-sized `Tracks[]`/`tracks[]` arrays — an out-of-bounds *read* (not write) that rendered adjacent memory content as on-screen text via `drawString()`. The earlier `Set_Application_Values_From_Config()` clamp only protected a local copy, never the underlying field, leaving every other unclamped read of `TrackCount`/`DoorCount` across the codebase exposed. Fixed at the source: clamped both fields once inside `ConfigMemHelper_read()`, immediately after NVM load, so every call site is automatically safe. Also hardened `config_mem_helper.cpp`'s `strncpy(dest, src, sizeof(dest))` calls for `trackName`/`trackShort` with explicit null-termination (a real but, on inspection, not-yet-triggered footgun). Documented the full misdiagnosis-then-fix story under §6.1 as a lesson on clamping at the read boundary, not at each use. |
