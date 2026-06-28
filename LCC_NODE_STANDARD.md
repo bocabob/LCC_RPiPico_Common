@@ -304,6 +304,24 @@ instead of a GPIO signal.
 > in *non-black* colors, tested **before** touch init, also fail to show
 > once the page-drawing code runs **after** touch init).
 
+> **`fillScreen()` scroll-window gotcha** (found during the same bring-up,
+> 2026-06-21, once the blank-screen issue above was fixed): the native
+> `RA8876_RP2040` library's `fillScreen()` (`RA8876_common::fillScreen()`)
+> clears only the **scroll/margin window**
+> (`_scrollXL`/`_scrollYT`/`_scrollXR`/`_scrollYB`) by calling
+> `drawSquareFill()` **directly** — it does *not* go through `TT_Display`'s
+> hardened `fillRect()` override (the one with the documented `w==1`/`w==0`/
+> `h==0` degenerate-case guards), and nothing in the Turntable codebase ever
+> explicitly sets that window to match the actual panel resolution. If it's
+> left at whatever the base class's constructor assumed, `fillScreen()`
+> leaves part of the physical panel un-cleared, and old/residual GRAM
+> content (e.g. from an earlier test/sketch on the same physical panel)
+> stays visible in that region — appearing once at boot, never again, since
+> nothing else re-clears that exact spot afterward. **Fix**: call
+> `setMargins(0, 0, <panel width>, <panel height>)` once inside `TT_Display::init()`,
+> right after the panel's timing registers are configured. See
+> `LCC_RPiPico_Turntable/DisplayDriver.h`'s `TT_Display::init()`.
+
 #### Parallel Display — Capacitive Touch
 | Pin | Signal |
 |---|---|
@@ -693,3 +711,4 @@ This is an OpenLCB (LCC) node that <one-line purpose>.
 | 2026-06-21 | Turntable v3.0 SPI+TMC2209 bring-up: fixed `TOUCH_INT` in `NodeConfig.h` to use `-1` (the touch library's own "not connected" sentinel) instead of `UNUSED_PIN`(127) — `my_bb_captouch.cpp`'s GT911 sleep/wake path checks `_iINT != -1` specifically and would otherwise drive a nonexistent GPIO 127. Found and fixed a real hang/memory-corruption bug in `Set_Application_Values_From_Config()` (`config_mem_helper.cpp`): `TrackCount`/`DoorCount` were read from NVM with no bounds check and used directly as loop bounds/array indices into the fixed-size `Tracks[MAX_TRACKS]`/`doors[MAX_DOORS]` arrays — stale/incompatible NVM data caused an out-of-bounds write that hung the node during `setup1()`. Both counts are now clamped to their array bounds before use. |
 | 2026-06-21 | Added §7.2 Factory Reset Button Gesture: hold Blue+Gold for 2s at boot to wipe and reinitialize config memory (does not touch the §7.1 protected identity region). Implemented identically in all four projects via a new `_check_factory_reset_gesture()` called from `setup()`. Flagged a real caveat: the `#if defined(...)` guard does not actually skip the gesture on combos where Blue/Gold are reassigned to another function, since the macros stay defined either way — don't rely on it being safe to use on such combos. |
 | 2026-06-21 | Diagnosed Turntable v3.0 SPI+TMC2209 "blank screen" bug: `TOUCH_RST`/`DISPLAY_RST` share a physical pin on the SPI Display — Capacitive Touch breakout (§6.1), and the touch library's chip-type auto-detection resets that shared pin — silently resetting the display controller back to power-on defaults *after* `tft.init()` already configured it, with nothing re-applying that config afterward. Fixed in `UserInterface.cpp`'s `setupDisplay()` by re-running `tft.init()`/`setRotation()` right after `tp.init()` whenever the pins are shared. Documented as a gotcha under §6.1's SPI Display table for any future combo sharing these pins. |
+| 2026-06-21 | Diagnosed a second Turntable v3.0 display bug, visible only after the above fix: stray CDI-XML-looking text appeared once at boot in unused screen regions. Root cause: `RA8876_RP2040`'s `fillScreen()` clears only an internal scroll/margin window (never explicitly set to the real 1024x600 panel size), bypassing the hardened `fillRect()` override entirely, so it left part of the panel un-cleared, exposing old residual GRAM content. Fixed with `setMargins(0, 0, 1024, 600)` in `TT_Display::init()`. Also hardened `config_mem_helper.cpp`'s `strncpy(dest, src, sizeof(dest))` calls for `trackName`/`trackShort` with explicit null-termination (a real but, on inspection, not-yet-triggered footgun — current default strings are all short enough to avoid it, but a user-typed CDI name long enough to fill the buffer would hit it, and the render path's `putString()` has no length bound at all). Documented the `fillScreen()` gotcha under §6.1. |
