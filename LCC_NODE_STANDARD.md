@@ -304,47 +304,62 @@ instead of a GPIO signal.
 > in *non-black* colors, tested **before** touch init, also fail to show
 > once the page-drawing code runs **after** touch init).
 
-> **Stray "CDI text on screen" bug — two wrong theories before the real one**
-> (found during the same bring-up, 2026-06-21, once the blank-screen issue
-> above was fixed). Symptom: a line of text resembling the tail of the
-> node's own CDI XML (literally `</name></eventid></group></segment></cdi>`
-> in one capture) appeared once at boot in otherwise-empty screen regions,
-> never again on later redraws.
+> **Stray "CDI text on screen" bug — a long misdiagnosis before the real
+> cause** (found during the same bring-up, 2026-06-21, once the blank-screen
+> issue above was fixed). Symptom: a line of text resembling fragments of
+> the node's own CDI XML (e.g. `</name></eventid></group></segment></cdi>`,
+> later `wValue='yes'></slider></hints></int><eventid><name>Low-Luminosity On`)
+> appeared during the homing animation, partially overwritten as later
+> graphics drew on top of it, never recurring once homing completed.
 >
-> Two display-library theories were tried and **disproven** — recorded here
-> so they aren't re-tried: (1) the scroll/margin window
-> (`_scrollXL`/`_scrollYT`/`_scrollXR`/`_scrollYB`) being unset to the real
-> panel size — wrong, this library's `HDW`/`VDH` globals are already
-> hardcoded to 1024/600, matching the panel. (2) `fillScreen()` bypassing the
-> hardened `fillRect()` override and failing on an unverified full-panel GE
-> call — overriding `fillScreen()` to route through `fillRect()` is still
-> good practice (kept in `TT_Display::fillScreen()`) but didn't change the
-> symptom at all, proving the screen-clear itself was never the problem.
+> **Four theories were tried and disproven** before the real cause was
+> found — recorded here so they aren't re-tried:
+> 1. Scroll/margin window unset to the real panel size — wrong; this
+>    library's `HDW`/`VDH` globals are already hardcoded to 1024/600.
+> 2. `fillScreen()` bypassing the hardened `fillRect()` and failing on an
+>    unverified full-panel GE call — the override is still good practice
+>    (kept in `TT_Display::fillScreen()`) but changed nothing.
+> 3. Unclamped `TrackCount` causing an out-of-bounds read in `drawTracks()`
+>    — a *real* bug (now fixed, see §6.1's other entry on this), but not
+>    *this* symptom; clamping it changed nothing either.
+> 4. Network/CDI-stream crosstalk on a shared CAN bus — invalidated
+>    immediately: the node under test had no CAN connection at all, only USB.
 >
-> **Actual root cause**: `drawTracks()` (`UserInterface.cpp`) reads
-> `ConfigMemHelper_config_data.attributes.TrackCount` **directly**, with no
-> bounds check, and loops `for (int i = 1; i <= TrackCount; i++)` indexing
-> `Tracks[i]`/`tracks[i]` — arrays sized `MAX_TRACKS`. This is the *same*
-> class of bug as the §6.1-adjacent hang fixed earlier in
-> `Set_Application_Values_From_Config()`, except that fix only clamped a
-> *local copy* inside that one function — it never touched the underlying
-> NVM-sourced field, so every *other* unclamped read of `TrackCount`/
-> `DoorCount` elsewhere in the codebase (and there are many — `Turntable.cpp`,
-> `UserInterface.cpp`, `callbacks.cpp`) remained exposed. With a bad count,
-> `drawTracks()`'s out-of-bounds **read** rendered whatever happened to sit
-> in adjacent RAM as on-screen text via `drawString()` — which, unlike a
-> stray *write*, can legitimately surface recognizable content if anything
-> else (e.g. a protocol-stack buffer) keeps CDI text nearby in memory.
+> The breakthrough was timing, not content: the artifact appeared **after**
+> the home page finished drawing but **before** homing completed — i.e.
+> during repeated calls to `drawBridge()` (invoked from `updateBridgeAnimation()`
+> on Core 0 as the stepper visually moves toward home), not during the
+> one-time initial page draw every earlier theory assumed.
 >
-> **Fix**: clamp `TrackCount`/`DoorCount` to their real array bounds **once,
-> at the source** — inside `ConfigMemHelper_read()`, immediately after NVM
-> data is loaded into the struct — rather than re-deriving the same clamp at
-> every call site. Every unclamped loop throughout the codebase becomes safe
-> automatically. (`drawTracks()` also got a belt-and-suspenders local clamp,
-> since it's the specific function that was rendering the bad data.) The
-> lesson for any node holding NVM-sourced counts used as loop bounds: clamp
-> at the read boundary, not at each use — a fix applied to only one call
-> site silently leaves every other one exposed.
+> **Actual root cause**: `drawBridge()` (`UserInterface.cpp`) does
+> `tft.drawString(TrackName[ConfigMemHelper_config_data.CurrentTrack], ...)`
+> with no bounds check. `CurrentTrack` is a **top-level** `config_mem_t`
+> field — not under `.attributes` — so it's runtime state, not a CDI-defined
+> value, and **none** of the `_load_defaults_*` functions ever set it. An
+> `'r'` (wipe to `0xFF`) + `'i'` (write CDI defaults) reset therefore left it
+> at **255**. `TrackName[255]` reads 6375 bytes past the 20-entry
+> (`MAX_TRACKS`), flash-resident (`const`) array — landing on whatever the
+> linker placed next, which in this build was close enough to the embedded
+> `_cdi_data[]` (also `const`/flash) to render genuine, readable CDI text.
+> Deterministic stale byte → same landing spot every boot; `drawBridge()`
+> called repeatedly during homing → exactly the observed window;
+> `MoveToTrack()` later setting `CurrentTrack` legitimately → why it stopped
+> once homing finished and a real track move occurred.
+>
+> **Fix**: same pattern as the `TrackCount`/`DoorCount` fix, applied to this
+> field too — `config->CurrentTrack` is now explicitly defaulted in
+> `_load_defaults_attributes()` and clamped to `MAX_TRACKS-1` once inside
+> `ConfigMemHelper_read()`, plus a belt-and-suspenders local clamp at the
+> `drawBridge()` call site itself.
+>
+> **The general lesson, twice-confirmed now**: any `config_mem_t` field used
+> as an array index or loop bound — whether under `.attributes` (CDI-defined)
+> or a top-level field (runtime state) — needs (a) an explicit default in the
+> loader so a factory reset actually initializes it, and (b) a clamp at the
+> NVM-read boundary, not at each use site. Top-level fields are easy to miss
+> precisely *because* they're not CDI-defined — nothing on the JMRI/config-tool
+> side will ever validate them, so a missing default is invisible until
+> something indexes an array with the stale value.
 
 #### Parallel Display — Capacitive Touch
 | Pin | Signal |
@@ -735,4 +750,4 @@ This is an OpenLCB (LCC) node that <one-line purpose>.
 | 2026-06-21 | Turntable v3.0 SPI+TMC2209 bring-up: fixed `TOUCH_INT` in `NodeConfig.h` to use `-1` (the touch library's own "not connected" sentinel) instead of `UNUSED_PIN`(127) — `my_bb_captouch.cpp`'s GT911 sleep/wake path checks `_iINT != -1` specifically and would otherwise drive a nonexistent GPIO 127. Found and fixed a real hang/memory-corruption bug in `Set_Application_Values_From_Config()` (`config_mem_helper.cpp`): `TrackCount`/`DoorCount` were read from NVM with no bounds check and used directly as loop bounds/array indices into the fixed-size `Tracks[MAX_TRACKS]`/`doors[MAX_DOORS]` arrays — stale/incompatible NVM data caused an out-of-bounds write that hung the node during `setup1()`. Both counts are now clamped to their array bounds before use. |
 | 2026-06-21 | Added §7.2 Factory Reset Button Gesture: hold Blue+Gold for 2s at boot to wipe and reinitialize config memory (does not touch the §7.1 protected identity region). Implemented identically in all four projects via a new `_check_factory_reset_gesture()` called from `setup()`. Flagged a real caveat: the `#if defined(...)` guard does not actually skip the gesture on combos where Blue/Gold are reassigned to another function, since the macros stay defined either way — don't rely on it being safe to use on such combos. |
 | 2026-06-21 | Diagnosed Turntable v3.0 SPI+TMC2209 "blank screen" bug: `TOUCH_RST`/`DISPLAY_RST` share a physical pin on the SPI Display — Capacitive Touch breakout (§6.1), and the touch library's chip-type auto-detection resets that shared pin — silently resetting the display controller back to power-on defaults *after* `tft.init()` already configured it, with nothing re-applying that config afterward. Fixed in `UserInterface.cpp`'s `setupDisplay()` by re-running `tft.init()`/`setRotation()` right after `tp.init()` whenever the pins are shared. Documented as a gotcha under §6.1's SPI Display table for any future combo sharing these pins. |
-| 2026-06-21 | Diagnosed a second Turntable v3.0 display bug, visible only after the above fix: stray CDI-XML-looking text appeared once at boot in unused screen regions. Two display-library theories (unset scroll margins; unverified `fillScreen()`) were tried and disproven — kept the `fillScreen()`→`fillRect()` override anyway as good practice, but it wasn't the cause. Real root cause: `drawTracks()` read NVM-sourced `TrackCount` with no bounds check and indexed past the `MAX_TRACKS`-sized `Tracks[]`/`tracks[]` arrays — an out-of-bounds *read* (not write) that rendered adjacent memory content as on-screen text via `drawString()`. The earlier `Set_Application_Values_From_Config()` clamp only protected a local copy, never the underlying field, leaving every other unclamped read of `TrackCount`/`DoorCount` across the codebase exposed. Fixed at the source: clamped both fields once inside `ConfigMemHelper_read()`, immediately after NVM load, so every call site is automatically safe. Also hardened `config_mem_helper.cpp`'s `strncpy(dest, src, sizeof(dest))` calls for `trackName`/`trackShort` with explicit null-termination (a real but, on inspection, not-yet-triggered footgun). Documented the full misdiagnosis-then-fix story under §6.1 as a lesson on clamping at the read boundary, not at each use. |
+| 2026-06-21 | Diagnosed a second Turntable v3.0 display bug, visible only after the above fix: stray CDI-XML-looking text appeared during the homing animation (not at the initial page draw, as first assumed). Four theories tried and disproven in sequence (scroll margins; unverified `fillScreen()`; unclamped `TrackCount` in `drawTracks()`; network/CAN crosstalk — invalidated immediately since the test node had no CAN connection at all) before the timing detail (appears after home page drawn, before homing completes) pointed at `drawBridge()`, called repeatedly from Core 0's `updateBridgeAnimation()` during homing. Real root cause: `drawBridge()` indexes `TrackName[ConfigMemHelper_config_data.CurrentTrack]` with no bounds check; `CurrentTrack` is a top-level `config_mem_t` field (not under `.attributes`), so none of the `_load_defaults_*` functions ever set it, leaving it at the post-`'r'`-wipe value of 255 after an `'i'` reset — 6375 bytes past the 20-entry flash-resident `TrackName[]` array, landing close enough to the embedded `_cdi_data[]` (also const/flash) to render genuine CDI text. Fixed: explicit default in `_load_defaults_attributes()`, clamp in `ConfigMemHelper_read()`, belt-and-suspenders clamp at the `drawBridge()` call site. Documented the full four-theory misdiagnosis under §6.1, with the general lesson that top-level (non-CDI) fields used as array indices are easy to miss precisely because no CDI/JMRI validation ever touches them. |
