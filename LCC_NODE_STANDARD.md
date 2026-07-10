@@ -445,6 +445,22 @@ reaching anything above it — that's the mechanism this region relies on; do
 not change the wipe commands or `config_mem_helper.cpp` bounds checks to
 "fix" this, they're protecting the gap by design.
 
+**Standard definition**: define `CONFIG_MEM_SIZE` in `BoardSettings.h` as
+`#define CONFIG_MEM_SIZE (I2C_DEVICESIZE-64)` — a formula off the active
+`I2C_DEVICESIZE`, not a separate hardcoded literal that has to be
+remembered and kept in sync by hand whenever `I2C_DEVICESIZE` changes.
+**The parentheses are required, not stylistic**: an unparenthesized
+`I2C_DEVICESIZE-64` expands wrong wherever `CONFIG_MEM_SIZE` is used in a
+division elsewhere in the codebase — e.g. `CONFIG_MEM_SIZE / sizeof(buffer)`
+becomes `I2C_DEVICESIZE-64 / sizeof(buffer)` = `I2C_DEVICESIZE -
+(64/sizeof(buffer))`, not `(I2C_DEVICESIZE-64) / sizeof(buffer)`. This exact
+bug was found in `LCC_RPiPico_Turntable` on 2026-06-28: it silently made
+`ConfigMemHelper_reset_config_mem()`/`_clear_config_mem()` (the `'r'`/`'c'`
+serial commands) loop roughly 32767 times instead of 511, hammering the
+same clamped address with rapid-fire writes and producing consistent I2C
+Wire timeouts (error code 5). Fixed there and standardized across all four
+projects (Turntable, Roundhouse, PixelLights, Clock_Lights) on 2026-07-08.
+
 Reserve **64 bytes** above `CONFIG_MEM_SIZE` for this region (not just the 12
 bytes the identity block needs) so future protected items — calibration
 constants that shouldn't reset with config, a provisioning/lock flag, a
@@ -746,6 +762,7 @@ This is an OpenLCB (LCC) node that <one-line purpose>.
 | 2026-06-20 | `board_configs/BoardPins_Node_v30.h` added to all four projects (CONFIG_MEM_SIZE shrunk to 32704 to fit §7.1's protected region). Protected NVM identity block (§7.1) implemented in all four projects, with one deviation from the original design — warn-and-fallback instead of halt-on-unprovisioned, documented in §7.1. Turntable's v3.0 SPI-display + TMC2209 breakout combo implemented in `NodeConfig.h`. |
 | 2026-06-20 | Corrected the §6.1 Parallel Display — Capacitive Touch breakout table: D_D/C and VREF were transposed on I/O-3 Pin4/Pin5 in the original breakout design (confirmed by the breakout's designer). Table and Turntable's `NodeConfig.h`/`display_configs/DisplayConfig_SSD1963_parallel_v30.h` now match the corrected wiring; the parallel-display combo (`TURNTABLE_BREAKOUT_PARALLEL_TMC2209`) is implemented and no longer blocked. |
 | 2026-06-20 | Fixed `board_configs/BoardPins_Node_v30.h` in all four projects: the header comment and `IO1_PIN5/PIN6`/`IO2_PIN5/PIN6` sentinel assignments had Pin5/Pin6 backwards (claimed Pin5=VCC, Pin6=GND). Confirmed against the hardware repo's "LCC Pico Board Overview" doc: Pin5=GND, Pin6=Vselect (jumper-selectable 3.3V/5V). `LCC-RPi-Pico-Board` README's pin table already matched the correct convention. |
+| 2026-07-08 | Standardized `CONFIG_MEM_SIZE` definition (§7.1) across all four projects to `#define CONFIG_MEM_SIZE (I2C_DEVICESIZE-64)` — a formula off `I2C_DEVICESIZE` instead of a separately-maintained literal. Parentheses are required (see §7.1 for the exact precedence bug this avoids, found in Turntable on 2026-06-28). Roundhouse and PixelLights switched from `LCC_BOARD_NODE_V28` to `LCC_BOARD_NODE_V30` for final v3.0 hardware testing; Roundhouse's `board_configs/BoardPins_Node_v30.h` gained the functional pin assignments (servo I2C on gp16/17, NeoPixel outputs left `UNUSED_PIN` as future scaffolding) it was missing — this project has no `NodeConfig.h` layer, so functional pins live directly in the board header, unlike Turntable/PixelLights/Clock_Lights. |
 | 2026-06-21 | First hardware test of v3.0 (Clock_Lights). Fixed a `case 't':` switch-scope compile error introduced by §7.1's `'N'`/`'Y'` cases in Roundhouse/PixelLights/Clock_Lights (Turntable unaffected — no `case 't':` there); added the missing `NodeConfig.h` functional pin layer for Clock_Lights on v3.0 (carried over from `BoardPins_Node_v295.h` — display/touch/NeoPixel pins are unchanged between v2.95 and v3.0); hardened `NodeIdentity_write()` with a post-write `delay(20)` + read-back verification after observing a real EEPROM write-settling issue (first reboot after provisioning came up with the fallback default ID, second reboot read correctly). |
 | 2026-06-21 | Turntable v3.0 SPI+TMC2209 bring-up: fixed `TOUCH_INT` in `NodeConfig.h` to use `-1` (the touch library's own "not connected" sentinel) instead of `UNUSED_PIN`(127) — `my_bb_captouch.cpp`'s GT911 sleep/wake path checks `_iINT != -1` specifically and would otherwise drive a nonexistent GPIO 127. Found and fixed a real hang/memory-corruption bug in `Set_Application_Values_From_Config()` (`config_mem_helper.cpp`): `TrackCount`/`DoorCount` were read from NVM with no bounds check and used directly as loop bounds/array indices into the fixed-size `Tracks[MAX_TRACKS]`/`doors[MAX_DOORS]` arrays — stale/incompatible NVM data caused an out-of-bounds write that hung the node during `setup1()`. Both counts are now clamped to their array bounds before use. |
 | 2026-06-21 | Added §7.2 Factory Reset Button Gesture: hold Blue+Gold for 2s at boot to wipe and reinitialize config memory (does not touch the §7.1 protected identity region). Implemented identically in all four projects via a new `_check_factory_reset_gesture()` called from `setup()`. Flagged a real caveat: the `#if defined(...)` guard does not actually skip the gesture on combos where Blue/Gold are reassigned to another function, since the macros stay defined either way — don't rely on it being safe to use on such combos. |
