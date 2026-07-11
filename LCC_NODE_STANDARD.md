@@ -31,6 +31,7 @@ rather than restate these rules.
 7. [Configuration Memory (CDI/EEPROM) Conventions](#7-configuration-memory-cdieeprom-conventions)
    - [7.1 Protected NVM Region (above CONFIG_MEM_SIZE)](#71-protected-nvm-region-above-config_mem_size)
    - [7.2 Factory Reset Button Gesture](#72-factory-reset-button-gesture)
+   - [7.3 SNIP Identity Fields (hardware_version / software_version)](#73-snip-identity-fields-hardware_version--software_version)
 8. [Dual-Core Contract](#8-dual-core-contract)
 9. [Naming Conventions](#9-naming-conventions)
 10. [OpenLCB Integration Rules](#10-openlcb-integration-rules)
@@ -420,14 +421,34 @@ new board family's `LCC_BOARD_<FAMILY>_V<NN>` naming.
   timer after a quiet period (Roundhouse uses 30 ticks ≈ 3 seconds). New
   nodes should reuse this pattern rather than writing to EEPROM synchronously
   in a callback.
-- `<manufacturer>`/`<model>` fields in `CDI.xml` are currently placeholder
-  (`MANU`/`MODEL`) — fill in per node before any CDI XML is finalized for a
-  real deployment; `<hardwareVersion>` should track the `LCC_BOARD_*` macro
-  in use.
+- `CDI.xml`'s `<manufacturer>/<model>/<hardwareVersion>/<softwareVersion>`
+  must mirror `openlcb_user_config.c`'s `.snip.name/model/hardware_version/
+  software_version` exactly — see §7.3 for how those SNIP fields themselves
+  are derived/composed.
 - Storage backend selection (`USE_I2C_STORAGE` vs `USE_INTERNAL_FLASH_STORAGE`,
   `EXTERNAL_EEPROM` vs `EXTERNAL_FRAM`, `USE_TILLAART` vs Adafruit) lives in
   `BoardSettings.h` next to the board dispatch — keep this block in sync
   across projects unless a node has a specific reason to diverge.
+- **Regenerating the CDI byte array**: `openlcb_user_config.c`'s
+  `static const uint8_t _cdi_data[] = { ... }` must be kept in sync with
+  `CDI.xml` by hand any time the XML changes (there is no build-time
+  codegen step for it). Use `LCC_RPiPico_Common/cdi_to_c_array.py` rather
+  than editing the array by hand or using the browser-based
+  `cdi_fdi_wizard.html` tool's "Array" tab, which requires more manual
+  copy/paste:
+  ```
+  python cdi_to_c_array.py <project>/CDI.xml -o out.txt
+  ```
+  Splice the byte-array body (between `.cdi = {` and the closing `},`) from
+  `out.txt` into `_cdi_data[]`, preserving that project's existing
+  formatting immediately before the first byte line (some projects have a
+  `// CDI byte array.` comment there, some just a blank line — match
+  whichever file you're editing). Fields that use `sizeof(_cdi_data)`
+  (e.g. `.address_space_configuration_definition.highest_address`) update
+  automatically; the `#define USER_CDI_ARRAY_SIZE` the script prints is
+  informational only — separately confirm `CONFIG_MEM_SIZE` (driven by
+  `I2C_DEVICESIZE` in `BoardSettings.h`) is still large enough to hold the
+  new array, since the script does not check this.
 
 ### 7.1 Protected NVM Region (above `CONFIG_MEM_SIZE`)
 
@@ -643,6 +664,65 @@ void _check_factory_reset_gesture(void) {
 
 **Status**: implemented in all four current node projects as of 2026-06-21.
 
+### 7.3 SNIP Identity Fields (`hardware_version` / `software_version`)
+
+`openlcb_user_config.c`'s `node_parameters_t.snip` fields are the node's
+self-reported identity over LCC (SNIP = Simple Node Information Protocol).
+Two of the four fields were being hand-maintained and had already drifted
+from reality in every one of the four projects (stale `hardware_version`
+strings left over from a previous board revision, and `CDI.xml`'s
+identification block disagreeing with the `.snip` values it should mirror —
+two projects still had it at its original `MANU`/`MODEL` placeholder). Fixed
+per the convention below as of Rev 14.
+
+- **`hardware_version`** is derived, never hand-typed. Each project's
+  `BoardSettings.h`, right next to its `#if defined(LCC_BOARD_*)` board
+  dispatch, defines a matching `BOARD_HARDWARE_VERSION_STR`:
+  ```c
+  #if defined(LCC_BOARD_NODE_V25)
+    #define BOARD_HARDWARE_VERSION_STR "2.5"
+  #elif defined(LCC_BOARD_NODE_V26)
+    #define BOARD_HARDWARE_VERSION_STR "2.6"
+  ...
+  #elif defined(LCC_BOARD_NODE_V30)
+    #define BOARD_HARDWARE_VERSION_STR "3.0"
+  #endif
+  ```
+  `openlcb_user_config.c` then just does
+  `.snip.hardware_version = BOARD_HARDWARE_VERSION_STR,` — it is now
+  physically impossible for this field to disagree with the board macro
+  actually selected in `ProjectConfig.h`. (Known gap: this does not yet
+  distinguish v3.0 breakout/display *combo* variants from each other, e.g.
+  the SPI-display vs parallel-display Turntable builds — if that distinction
+  ever needs to show up in `hardware_version`, extend the string in
+  `NodeConfig.h` after this macro is defined, don't hand-edit the result.)
+- **`software_version`** is composed as `"<LCC_NODE_STANDARD_REVISION>.<patch>"`
+  using `LCC_NODE_STANDARD_REVISION_STR` from the new
+  `LCC_RPiPico_Common/StandardVersion.h`:
+  ```c
+  .snip.software_version = LCC_NODE_STANDARD_REVISION_STR ".1",  // patch 1 against this revision
+  ```
+  `<patch>` is a plain per-project literal, bumped by that project whenever
+  it re-releases without the standard itself having changed. Bump
+  `LCC_NODE_STANDARD_REVISION`/`_STR` in `StandardVersion.h` by exactly one
+  for every row added to §13's changelog (the two are meant to stay
+  1:1 — see the note at the top of §13); a project picking up a new
+  revision resets its own patch counter back to 1.
+- **`CDI.xml` must mirror both**: since `_cdi_data[]` is a compiled byte
+  array (§7's "Regenerating the CDI byte array" bullet above), the human-
+  readable `<manufacturer>/<model>/<hardwareVersion>/<softwareVersion>` in
+  `CDI.xml`'s `<identification>` block do not update themselves. Any time
+  `.snip.name/model/hardware_version/software_version` changes (including
+  just a routine `software_version` patch bump), update `CDI.xml` to match
+  and rerun `cdi_to_c_array.py` — an easy step to forget since nothing
+  fails to compile if you don't.
+- Canonical `manufacturer`/`model` values as of this revision (previously
+  inconsistent across projects — e.g. `"Gamble"` vs `"Bob Gamble"`,
+  `"Roundhouse"` vs `"Roundhouse Controller"`): manufacturer is `"Gamble"`
+  everywhere; model is each project's own descriptive name (`"Turntable
+  Controller"`, `"Roundhouse Controller"`, `"Lighting Controller"`,
+  `"Fastclock & Lights"`).
+
 ## 8. Dual-Core Contract
 
 - **Core 0** (`setup()`/`loop()`): OpenLCB protocol, CAN comms, event
@@ -754,17 +834,21 @@ This is an OpenLCB (LCC) node that <one-line purpose>.
 
 ## 13. Change Log
 
-| Date | Change |
-|---|---|
-| 2026-06-20 | Initial version, derived from Turntable, Roundhouse, Clock_Lights, PixelLights as they exist today |
-| 2026-06-20 | Added §7.1 protected NVM region: node identity block design (from PixelLights design session) plus reserved headroom and an offset registry for future persistent items |
-| 2026-06-20 | Added v3.0 generic node + breakout-pinout tables (§6.1); marked `STEPPER` family legacy/frozen in §4; cleaned up table formatting and a duplicated pin entry — ragged v2.5–v3.0 I/O-2/I/O-3 table cells in §5 still need correct values filled in |
-| 2026-06-20 | `board_configs/BoardPins_Node_v30.h` added to all four projects (CONFIG_MEM_SIZE shrunk to 32704 to fit §7.1's protected region). Protected NVM identity block (§7.1) implemented in all four projects, with one deviation from the original design — warn-and-fallback instead of halt-on-unprovisioned, documented in §7.1. Turntable's v3.0 SPI-display + TMC2209 breakout combo implemented in `NodeConfig.h`. |
-| 2026-06-20 | Corrected the §6.1 Parallel Display — Capacitive Touch breakout table: D_D/C and VREF were transposed on I/O-3 Pin4/Pin5 in the original breakout design (confirmed by the breakout's designer). Table and Turntable's `NodeConfig.h`/`display_configs/DisplayConfig_SSD1963_parallel_v30.h` now match the corrected wiring; the parallel-display combo (`TURNTABLE_BREAKOUT_PARALLEL_TMC2209`) is implemented and no longer blocked. |
-| 2026-06-20 | Fixed `board_configs/BoardPins_Node_v30.h` in all four projects: the header comment and `IO1_PIN5/PIN6`/`IO2_PIN5/PIN6` sentinel assignments had Pin5/Pin6 backwards (claimed Pin5=VCC, Pin6=GND). Confirmed against the hardware repo's "LCC Pico Board Overview" doc: Pin5=GND, Pin6=Vselect (jumper-selectable 3.3V/5V). `LCC-RPi-Pico-Board` README's pin table already matched the correct convention. |
-| 2026-07-08 | Standardized `CONFIG_MEM_SIZE` definition (§7.1) across all four projects to `#define CONFIG_MEM_SIZE (I2C_DEVICESIZE-64)` — a formula off `I2C_DEVICESIZE` instead of a separately-maintained literal. Parentheses are required (see §7.1 for the exact precedence bug this avoids, found in Turntable on 2026-06-28). Roundhouse and PixelLights switched from `LCC_BOARD_NODE_V28` to `LCC_BOARD_NODE_V30` for final v3.0 hardware testing; Roundhouse's `board_configs/BoardPins_Node_v30.h` gained the functional pin assignments (servo I2C on gp16/17, NeoPixel outputs left `UNUSED_PIN` as future scaffolding) it was missing — this project has no `NodeConfig.h` layer, so functional pins live directly in the board header, unlike Turntable/PixelLights/Clock_Lights. |
-| 2026-06-21 | First hardware test of v3.0 (Clock_Lights). Fixed a `case 't':` switch-scope compile error introduced by §7.1's `'N'`/`'Y'` cases in Roundhouse/PixelLights/Clock_Lights (Turntable unaffected — no `case 't':` there); added the missing `NodeConfig.h` functional pin layer for Clock_Lights on v3.0 (carried over from `BoardPins_Node_v295.h` — display/touch/NeoPixel pins are unchanged between v2.95 and v3.0); hardened `NodeIdentity_write()` with a post-write `delay(20)` + read-back verification after observing a real EEPROM write-settling issue (first reboot after provisioning came up with the fallback default ID, second reboot read correctly). |
-| 2026-06-21 | Turntable v3.0 SPI+TMC2209 bring-up: fixed `TOUCH_INT` in `NodeConfig.h` to use `-1` (the touch library's own "not connected" sentinel) instead of `UNUSED_PIN`(127) — `my_bb_captouch.cpp`'s GT911 sleep/wake path checks `_iINT != -1` specifically and would otherwise drive a nonexistent GPIO 127. Found and fixed a real hang/memory-corruption bug in `Set_Application_Values_From_Config()` (`config_mem_helper.cpp`): `TrackCount`/`DoorCount` were read from NVM with no bounds check and used directly as loop bounds/array indices into the fixed-size `Tracks[MAX_TRACKS]`/`doors[MAX_DOORS]` arrays — stale/incompatible NVM data caused an out-of-bounds write that hung the node during `setup1()`. Both counts are now clamped to their array bounds before use. |
-| 2026-06-21 | Added §7.2 Factory Reset Button Gesture: hold Blue+Gold for 2s at boot to wipe and reinitialize config memory (does not touch the §7.1 protected identity region). Implemented identically in all four projects via a new `_check_factory_reset_gesture()` called from `setup()`. Flagged a real caveat: the `#if defined(...)` guard does not actually skip the gesture on combos where Blue/Gold are reassigned to another function, since the macros stay defined either way — don't rely on it being safe to use on such combos. |
-| 2026-06-21 | Diagnosed Turntable v3.0 SPI+TMC2209 "blank screen" bug: `TOUCH_RST`/`DISPLAY_RST` share a physical pin on the SPI Display — Capacitive Touch breakout (§6.1), and the touch library's chip-type auto-detection resets that shared pin — silently resetting the display controller back to power-on defaults *after* `tft.init()` already configured it, with nothing re-applying that config afterward. Fixed in `UserInterface.cpp`'s `setupDisplay()` by re-running `tft.init()`/`setRotation()` right after `tp.init()` whenever the pins are shared. Documented as a gotcha under §6.1's SPI Display table for any future combo sharing these pins. |
-| 2026-06-21 | Diagnosed a second Turntable v3.0 display bug, visible only after the above fix: stray CDI-XML-looking text appeared during the homing animation (not at the initial page draw, as first assumed). Four theories tried and disproven in sequence (scroll margins; unverified `fillScreen()`; unclamped `TrackCount` in `drawTracks()`; network/CAN crosstalk — invalidated immediately since the test node had no CAN connection at all) before the timing detail (appears after home page drawn, before homing completes) pointed at `drawBridge()`, called repeatedly from Core 0's `updateBridgeAnimation()` during homing. Real root cause: `drawBridge()` indexes `TrackName[ConfigMemHelper_config_data.CurrentTrack]` with no bounds check; `CurrentTrack` is a top-level `config_mem_t` field (not under `.attributes`), so none of the `_load_defaults_*` functions ever set it, leaving it at the post-`'r'`-wipe value of 255 after an `'i'` reset — 6375 bytes past the 20-entry flash-resident `TrackName[]` array, landing close enough to the embedded `_cdi_data[]` (also const/flash) to render genuine CDI text. Fixed: explicit default in `_load_defaults_attributes()`, clamp in `ConfigMemHelper_read()`, belt-and-suspenders clamp at the `drawBridge()` call site. Documented the full four-theory misdiagnosis under §6.1, with the general lesson that top-level (non-CDI) fields used as array indices are easy to miss precisely because no CDI/JMRI validation ever touches them. |
+Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — see §7.3. The Rev column is that revision number, assigned retroactively for rows before it existed.
+
+| Rev | Date | Change |
+|---|---|---|
+| 1 | 2026-06-20 | Initial version, derived from Turntable, Roundhouse, Clock_Lights, PixelLights as they exist today |
+| 2 | 2026-06-20 | Added §7.1 protected NVM region: node identity block design (from PixelLights design session) plus reserved headroom and an offset registry for future persistent items |
+| 3 | 2026-06-20 | Added v3.0 generic node + breakout-pinout tables (§6.1); marked `STEPPER` family legacy/frozen in §4; cleaned up table formatting and a duplicated pin entry — ragged v2.5–v3.0 I/O-2/I/O-3 table cells in §5 still need correct values filled in |
+| 4 | 2026-06-20 | `board_configs/BoardPins_Node_v30.h` added to all four projects (CONFIG_MEM_SIZE shrunk to 32704 to fit §7.1's protected region). Protected NVM identity block (§7.1) implemented in all four projects, with one deviation from the original design — warn-and-fallback instead of halt-on-unprovisioned, documented in §7.1. Turntable's v3.0 SPI-display + TMC2209 breakout combo implemented in `NodeConfig.h`. |
+| 5 | 2026-06-20 | Corrected the §6.1 Parallel Display — Capacitive Touch breakout table: D_D/C and VREF were transposed on I/O-3 Pin4/Pin5 in the original breakout design (confirmed by the breakout's designer). Table and Turntable's `NodeConfig.h`/`display_configs/DisplayConfig_SSD1963_parallel_v30.h` now match the corrected wiring; the parallel-display combo (`TURNTABLE_BREAKOUT_PARALLEL_TMC2209`) is implemented and no longer blocked. |
+| 6 | 2026-06-20 | Fixed `board_configs/BoardPins_Node_v30.h` in all four projects: the header comment and `IO1_PIN5/PIN6`/`IO2_PIN5/PIN6` sentinel assignments had Pin5/Pin6 backwards (claimed Pin5=VCC, Pin6=GND). Confirmed against the hardware repo's "LCC Pico Board Overview" doc: Pin5=GND, Pin6=Vselect (jumper-selectable 3.3V/5V). `LCC-RPi-Pico-Board` README's pin table already matched the correct convention. |
+| 7 | 2026-07-08 | Standardized `CONFIG_MEM_SIZE` definition (§7.1) across all four projects to `#define CONFIG_MEM_SIZE (I2C_DEVICESIZE-64)` — a formula off `I2C_DEVICESIZE` instead of a separately-maintained literal. Parentheses are required (see §7.1 for the exact precedence bug this avoids, found in Turntable on 2026-06-28). Roundhouse and PixelLights switched from `LCC_BOARD_NODE_V28` to `LCC_BOARD_NODE_V30` for final v3.0 hardware testing; Roundhouse's `board_configs/BoardPins_Node_v30.h` gained the functional pin assignments (servo I2C on gp16/17, NeoPixel outputs left `UNUSED_PIN` as future scaffolding) it was missing — this project has no `NodeConfig.h` layer, so functional pins live directly in the board header, unlike Turntable/PixelLights/Clock_Lights. |
+| 8 | 2026-06-21 | First hardware test of v3.0 (Clock_Lights). Fixed a `case 't':` switch-scope compile error introduced by §7.1's `'N'`/`'Y'` cases in Roundhouse/PixelLights/Clock_Lights (Turntable unaffected — no `case 't':` there); added the missing `NodeConfig.h` functional pin layer for Clock_Lights on v3.0 (carried over from `BoardPins_Node_v295.h` — display/touch/NeoPixel pins are unchanged between v2.95 and v3.0); hardened `NodeIdentity_write()` with a post-write `delay(20)` + read-back verification after observing a real EEPROM write-settling issue (first reboot after provisioning came up with the fallback default ID, second reboot read correctly). |
+| 9 | 2026-06-21 | Turntable v3.0 SPI+TMC2209 bring-up: fixed `TOUCH_INT` in `NodeConfig.h` to use `-1` (the touch library's own "not connected" sentinel) instead of `UNUSED_PIN`(127) — `my_bb_captouch.cpp`'s GT911 sleep/wake path checks `_iINT != -1` specifically and would otherwise drive a nonexistent GPIO 127. Found and fixed a real hang/memory-corruption bug in `Set_Application_Values_From_Config()` (`config_mem_helper.cpp`): `TrackCount`/`DoorCount` were read from NVM with no bounds check and used directly as loop bounds/array indices into the fixed-size `Tracks[MAX_TRACKS]`/`doors[MAX_DOORS]` arrays — stale/incompatible NVM data caused an out-of-bounds write that hung the node during `setup1()`. Both counts are now clamped to their array bounds before use. |
+| 10 | 2026-06-21 | Added §7.2 Factory Reset Button Gesture: hold Blue+Gold for 2s at boot to wipe and reinitialize config memory (does not touch the §7.1 protected identity region). Implemented identically in all four projects via a new `_check_factory_reset_gesture()` called from `setup()`. Flagged a real caveat: the `#if defined(...)` guard does not actually skip the gesture on combos where Blue/Gold are reassigned to another function, since the macros stay defined either way — don't rely on it being safe to use on such combos. |
+| 11 | 2026-06-21 | Diagnosed Turntable v3.0 SPI+TMC2209 "blank screen" bug: `TOUCH_RST`/`DISPLAY_RST` share a physical pin on the SPI Display — Capacitive Touch breakout (§6.1), and the touch library's chip-type auto-detection resets that shared pin — silently resetting the display controller back to power-on defaults *after* `tft.init()` already configured it, with nothing re-applying that config afterward. Fixed in `UserInterface.cpp`'s `setupDisplay()` by re-running `tft.init()`/`setRotation()` right after `tp.init()` whenever the pins are shared. Documented as a gotcha under §6.1's SPI Display table for any future combo sharing these pins. |
+| 12 | 2026-06-21 | Diagnosed a second Turntable v3.0 display bug, visible only after the above fix: stray CDI-XML-looking text appeared during the homing animation (not at the initial page draw, as first assumed). Four theories tried and disproven in sequence (scroll margins; unverified `fillScreen()`; unclamped `TrackCount` in `drawTracks()`; network/CAN crosstalk — invalidated immediately since the test node had no CAN connection at all) before the timing detail (appears after home page drawn, before homing completes) pointed at `drawBridge()`, called repeatedly from Core 0's `updateBridgeAnimation()` during homing. Real root cause: `drawBridge()` indexes `TrackName[ConfigMemHelper_config_data.CurrentTrack]` with no bounds check; `CurrentTrack` is a top-level `config_mem_t` field (not under `.attributes`), so none of the `_load_defaults_*` functions ever set it, leaving it at the post-`'r'`-wipe value of 255 after an `'i'` reset — 6375 bytes past the 20-entry flash-resident `TrackName[]` array, landing close enough to the embedded `_cdi_data[]` (also const/flash) to render genuine CDI text. Fixed: explicit default in `_load_defaults_attributes()`, clamp in `ConfigMemHelper_read()`, belt-and-suspenders clamp at the `drawBridge()` call site. Documented the full four-theory misdiagnosis under §6.1, with the general lesson that top-level (non-CDI) fields used as array indices are easy to miss precisely because no CDI/JMRI validation ever touches them. |
+| 13 | 2026-07-11 | Added `cdi_to_c_array.py` to this directory and documented it under §7 — a standalone port of `cdi_fdi_wizard.html`'s "Array" tab codegen (`_xmlToByteRows`/`renderByteArray` from the tool's own `cdi_editor/cdi_view.html` and `js/c_target.js`), verified byte-for-byte identical against the browser tool's output on both Turntable's and Roundhouse's paired-door-events CDI.xml. Lets `_cdi_data[]` in `openlcb_user_config.c` be regenerated/checked against `CDI.xml` without the browser tool. |
+| 14 | 2026-07-11 | Added §7.3 SNIP identity fields convention: `hardware_version` now derives from a `BOARD_HARDWARE_VERSION_STR` macro tied to the selected `LCC_BOARD_*` macro (defined per project in `BoardSettings.h`, next to the board dispatch) instead of being hand-maintained — eliminates a real, already-observed drift bug (all four projects' `.snip.hardware_version` and/or `CDI.xml`'s `<hardwareVersion>` had gone stale relative to the actual `LCC_BOARD_NODE_V30` in use, and two projects still had literal `MANU`/`MODEL` placeholders in `CDI.xml`). `software_version` now composed as `"<LCC_NODE_STANDARD_REVISION>.<patch>"` via the new `LCC_RPiPico_Common/StandardVersion.h`; this changelog's Rev column is that revision number. `CDI.xml`'s `<manufacturer>/<model>/<hardwareVersion>/<softwareVersion>` must mirror `.snip.name/model/hardware_version/software_version` exactly — since the CDI is a compiled byte array, changing any of these requires updating `CDI.xml` and rerunning `cdi_to_c_array.py`. Fixed the pre-existing drift in all four projects as part of adopting this. |
