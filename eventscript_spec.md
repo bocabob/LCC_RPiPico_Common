@@ -1,14 +1,19 @@
-# EventScript Language Specification — v0.3 (M1 Draft)
+# EventScript Language Specification — v0.4 (M1 Draft)
 
 Companion to the architecture document. This is the standing-context spec for Claude
 Code sessions covering M2 (host compiler + VM) onward. Everything here is a proposal to
 be argued with; decision points that most deserve pushback are marked ⚖.
 
-Changelog — v0.3: fast clock reworked around a **local consumer clock** as the source
-of truth (generators broadcast only on start/set plus infrequent heartbeats; nodes keep
-their own time). `at` triggers fire from local minute crossings, not network events;
-registers read the local clock continuously; discontinuity policy defined in §5.6.
-v0.2: added fast-clock registers and the `at HH:MM:` trigger. v0.1: initial draft.
+Changelog — v0.4: CDI **parameters** readable by scripts (§5.7, LOADP opcode);
+**export** variable modifier for application/CDI visibility (§5.7); lines confirmed
+binary-only with complex actuators driven via events (§5.4); retained-variable policy
+parameterized by NVM endurance class (§5.7); well-known events explicitly left to
+application code (§4). v0.3: fast clock reworked around a **local consumer clock** as
+the source of truth (generators broadcast only on start/set plus infrequent heartbeats;
+nodes keep their own time); `at` triggers fire from local minute crossings, not network
+events; registers read the local clock continuously; discontinuity policy defined in
+§5.6. v0.2: added fast-clock registers and the `at HH:MM:` trigger. v0.1: initial
+draft.
 
 ---
 
@@ -45,7 +50,7 @@ Keywords (reserved, case-sensitive, all lowercase):
 
 ```
 on  startup  every  at  end  if  then  elif  else  while  do
-wait  timeout  sleep  produce  var  retain  stop
+wait  timeout  sleep  produce  var  retain  export  stop
 and  or  not  true  false  event  log  setline  getline
 timedout  millis  fasthour  fastminute  fastrunning
 ```
@@ -64,9 +69,10 @@ requires backtracking. `NL` denotes statement termination (newline or `;`).
 ```
 program      = { declaration | handler } ;
 
-declaration  = ( "var" | "retain" ) IDENT "=" const_expr NL ;
+declaration  = [ "export" ] ( "var" | "retain" ) IDENT "=" const_expr NL ;
                  # slot scope; const_expr = literals/operators only,
-                 # folded at compile time; retain ⇒ persisted to NVM
+                 # folded at compile time; retain ⇒ persisted to NVM;
+                 # export ⇒ readable by application code and CDI monitor (§5.7)
 
 handler      = "on" "startup" ":" block "end"
              | "on" event_ref ":" block "end"
@@ -135,7 +141,18 @@ match against the table's name strings). The compiler infers direction from usag
 legal — and emits the consumer/producer registration sets as a compile artifact so the
 firmware registers with OpenLcbCLib without parsing source. An `event(…)` literal
 creates an anonymous internal binding; it participates in registration but not in the
-CDI table, which is why it's the discouraged path.
+CDI table, which is why it's the discouraged path. Well-known events (Emergency Stop
+and kin) get **no implicit behavior** from the interpreter: layout-safety policy
+belongs to application code, though a user may bind a well-known event through the
+table like any other if a script should react to it.
+
+**Parameters** (§5.7) resolve against the slot's CDI parameter table by name, exactly
+as events do against theirs. Resolution order for an identifier in expression
+position: declared variable, then parameter, then compile error. Parameters are
+read-only: a parameter name as an assignment target is a compile error. A declared
+variable whose name collides with an event or parameter name in the same slot is a
+compile error — shadowing across the three namespaces is a debugging trap, not a
+feature.
 
 There are no handler-local variables and no user-defined functions in v1. ⚖ Both are
 the most likely v2 additions; the ISA below leaves room (a frame-relative load/store
@@ -193,6 +210,17 @@ readings is wrap-safe by two's-complement arithmetic — worth one line in the u
 docs). `getline(n)` / `setline(n, v)` read and write logical I/O lines 1..N; the
 firmware owns the mapping from line numbers to physical GPIOs per board. An
 out-of-range line index is a runtime fault, not silent truncation.
+
+Lines are strictly **binary** — `setline` writes 0 or nonzero, `getline` returns 0
+or 1. Anything richer (servos, whether direct or via I2C drivers; stepper motors;
+NeoPixel strings) is deliberately outside the language: the script produces an event,
+and the application layer — on this node or any other — consumes it and performs the
+motion or animation. Locally produced events loop back to local consumers, so
+same-board actuators need nothing special. This keeps the language surface flat while
+letting boards grow arbitrarily complex I/O. A single line number may serve as both
+input and output where the firmware samples the line (RR-CirKits-style shared
+input/output lines); `getline` and `setline` on the same `n` are both legal, and the
+sampling mechanics are the firmware's concern, invisible to the script.
 
 ### 5.5 Faults
 
@@ -264,6 +292,41 @@ is fully host-testable in M2–M3 alongside the VM: sync, drift correction, disc
 classification, stop/start, backward rates, and midnight rollover all get golden tests
 before hardware.
 
+### 5.7 Parameters and exported variables
+
+**Parameters: CDI → script.** Each slot carries a CDI parameter table of up to 8
+entries: {name (16 chars), int32 value}, sitting alongside the event-binding table.
+Scripts read parameters by name like read-only variables; the compiler resolves names
+to table indices (LOADP). Reads are **live**: each access fetches the current table
+value, so a user tuning a debounce delay or a lamp threshold in JMRI changes behavior
+on the next read with no recompile and no script edit — the whole point of separating
+tunables from code. Writing a parameter's *name* field marks the slot for recompile
+(same rule as the event table); writing its *value* field never does. Parameters are
+runtime values and are not accepted where `const_expr` is required (`every` periods,
+declaration initializers) — those remain literal-only.
+
+**Exported variables: script → application/CDI.** The `export` modifier
+(`export var throws = 0`, `export retain last_route = 0`) flags a variable as
+externally visible through two windows: a firmware API for application code
+(lookup by slot + name or index, returning the live int32 — this is how the node
+application observes script state without any coupling to script internals), and the
+slot's read-only CDI **monitor region**, which serves name/value pairs live at
+memory-read time so JMRI displays current values on refresh. The monitor region
+doubles as the debug-watch surface — exporting a variable is how a user instruments a
+misbehaving script on a headless node. Cap: 8 exported variables per slot.
+
+**Retained-variable persistence by endurance class.** The NVM behind `retain` is a
+compile-time backend choice with very different endurance: **FRAM** writes through on
+every change (effectively unlimited endurance); **EEPROM** (the current fleet) uses a
+dirty-flag with coalesced flushes — default every 10 s and on clock-stop — because a
+variable toggling once per second under write-through would exhaust a ~1M-cycle cell in
+days; **raw flash** defers to the architecture document's sector-journal treatment. The
+semantic contract stated to users is honest about this: on FRAM, retained state
+survives any power loss; on EEPROM, retained state may lose up to the coalescing window
+on an abrupt cut. Backends present one small interface (read, write, flush, plus
+declared write-granularity and endurance class) so the core stays portable across
+RP2040/RP2350, ESP32-class parts, and host builds.
+
 ---
 
 ## 6. Bytecode ISA
@@ -272,7 +335,7 @@ Stack machine, one operand stack per handler context, all values int32. Variable
 encoding: 1 opcode byte + 0/1/2/4 operand bytes. Jump offsets are signed 16-bit,
 relative to the byte after the operand. The VM decrements the slice budget on **every
 instruction**, so no explicit yield opcode exists and backward jumps need no special
-casing. 30 opcodes assigned; 0x1F–0x3F reserved for v2 (CALL/RET, frame-relative
+casing. 31 opcodes assigned; 0x20–0x3F reserved for v2 (CALL/RET, frame-relative
 load/store, wait-any).
 
 | Op   | Mnemonic  | Operand      | Stack effect        | Notes |
@@ -308,6 +371,7 @@ load/store, wait-any).
 | 0x1C | LOG       | line# imm16  | v → —               | append (source line, v, millis) to diagnostic ring |
 | 0x1D | STOP      | —            | —                   | end handler run normally (checks pending latch) |
 | 0x1E | HALT      | —            | —                   | compiler-emitted end-of-handler; same as STOP |
+| 0x1F | LOADP     | param idx u8 | — → v               | live read of slot CDI parameter (§5.7) |
 
 Lowering conventions: `and`/`or` compile to JZ/JNZ short-circuit chains (no AND/OR
 opcodes). `if/elif/else` and `while` are conventional structured lowering. `wait ev`
@@ -322,7 +386,9 @@ SlotImage
   magic          u16      0xE5C0
   isa_version    u8       1
   flags          u8
-  var_count      u8       ≤ 32; parallel var table: {init value i32, RETAIN flag}
+  var_count      u8       ≤ 32; parallel var table: {init value i32,
+                          flags: RETAIN | EXPORT}
+  param_count    u8       ≤ 8; indices into the slot's CDI parameter table
   handler_count  u8       ≤ 16
   code_size      u16
   handlers[]     each: { trigger u8 (0=STARTUP,1=EVENT,2=PERIODIC,3=FASTTIME),
@@ -396,6 +462,8 @@ choices stay unconstrained.)
 | Bytecode per slot | 4,096 bytes | RAM budget; ~2:1 worst-case expansion observed target |
 | Variables per slot | 32 | u8 index headroom to 255 |
 | Retained vars per slot | 8 | NVM write-coalescing budget |
+| Parameters per slot | 8 | CDI table alongside event bindings |
+| Exported vars per slot | 8 | monitor region size |
 | Event bindings per slot | 16 | matches CDI table |
 | Handlers per slot | 16 | |
 | Operand stack per handler | 16 entries (64 B) | compiler-enforced |
@@ -411,14 +479,15 @@ choices stay unconstrained.)
 Every error carries line and column. Categories: lexical (bad character, identifier too
 long, integer out of range, malformed EVENTID); syntax (per-production expected-token
 messages — invest here, this is the user's primary feedback channel); name (undeclared
-variable, unknown event name, duplicate declaration, duplicate handler for trigger,
-assignment to register/keyword); semantic (non-constant initializer or period,
-`timeout 0`, chained comparison, `at` hour/minute out of range, duplicate `at` time);
-resource (any §8 limit, with the limit named in the message: "too many variables
-(max 32)").
+variable, unknown event or parameter name, duplicate declaration, duplicate handler for
+trigger, assignment to register/keyword/parameter, variable name shadowing an event or
+parameter name); semantic (non-constant initializer or period, `timeout 0`, chained
+comparison, `at` hour/minute out of range, duplicate `at` time); resource (any §8
+limit, with the limit named in the message: "too many variables (max 32)").
 
 Status-block contract: on failure the slot reports `COMPILE_ERR`, line, column, and a
-≤64-char message; on success, `RUNNING`, bytecode size, and handler count. This is the
+≤64-char message; on success, `RUNNING`, bytecode size, and handler count, plus the
+monitor region serving exported-variable name/value pairs live (§5.7). This is the
 entire debugging surface a headless user gets — treat error message quality as a
 feature with tests, not a byproduct.
 
@@ -431,6 +500,10 @@ User-defined functions and handler-local variables (ISA space reserved).
 `restartable` handler modifier. Cross-slot `shared` variables. Fast-clock extensions:
 sub-minute language granularity (`at HH:MM:SS`, the local clock already tracks finer
 than it exposes), a `fastrate` register, date/day-of-week registers, and per-script
-clock selection for multi-clock layouts (§5.6). Fused
+clock selection for multi-clock layouts (§5.6). Writable parameters and an
+application→script signaling path beyond events. Host-embedded compiler builds (the
+same portable C compiled as a library) for editor-side validation — e.g., a JMRI or
+standalone tool that checks scripts and reports error lines before any bytes reach the
+node; the on-device compiler remains authoritative. Fused
 increment/decrement and other peephole opcodes — only after profiling shows dispatch
 overhead matters, which at layout-logic rates it almost certainly does not.

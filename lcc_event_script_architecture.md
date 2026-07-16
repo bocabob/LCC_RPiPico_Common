@@ -219,6 +219,18 @@ SRAM, and accept a brief, bounded service pause at commit time only (commits are
 retained-variable writes to flash should be coalesced and rate-limited, e.g., one commit
 per 10s max).
 
+One layer of indirection makes all of this a build-time decision rather than a design
+fork: the engine talks to NVM only through a small backend interface (read, write,
+flush, plus declared write-granularity and an endurance class), with FRAM, I2C EEPROM,
+raw-flash, and host-file implementations behind it. The endurance class parameterizes
+the retained-variable policy — write-through on FRAM, coalesced flushes on EEPROM
+(the current board fleet), sector journaling on flash. The same seam is what keeps the
+core portable beyond the Pico: the compiler, VM, clock module, and slot manager are
+platform-agnostic C99, and the platform layer is exactly four things — NVM backend,
+timebase, line I/O map, and the OpenLcbCLib glue — which is what makes ESP32-class
+targets and host/PC builds (including a possible JMRI-embedded validation tool)
+realistic rather than aspirational.
+
 ### One program or many?
 
 **Multiple independent slots.** Isolation is the point: a compile error or runtime fault
@@ -249,7 +261,7 @@ Where the Tower approach is weak and the fixes:
 writes you want an explicit boundary so the compiler never sees a half-written slot.
 Fix: per-slot CRC in the header plus an explicit commit trigger — a one-byte "action"
 field per slot (CDI can render it as a button-like selector: Compile & Run / Stop /
-Revert) written last. The Memory Config "update complete" notification, where the tool
+Validate) written last. The Memory Config "update complete" notification, where the tool
 sends it, is a belt-and-suspenders recompile hint, but don't depend on tools sending it.
 
 **Editing ergonomics.** A JMRI textarea with no syntax highlighting and per-field size
@@ -347,9 +359,13 @@ report success or a precise error line; power-cycle and confirm persistence and
 retained variables.
 
 **M7 — Workflow polish and user documentation.** Multi-slot fault isolation testing,
-event-table learn-mode round trips, the Revert action, a user-facing language reference
+event-table learn-mode round trips, a user-facing language reference
 with the example-program library, and a "porting a Tower LCC+Q STL group to EventScript"
-worked example — a good adoption on-ramp for exactly your audience.
+worked example — a good adoption on-ramp for exactly your audience. M7 closes with the
+**language v1.0 freeze**: publish the frozen grammar, the example corpus with expected
+behaviors, and the error-message corpus as the reference package external tool
+developers (the JMRI editor in particular) build against; from this point grammar
+changes follow the §7 versioning discipline rather than free iteration.
 
 **M8 — Layout soak.** Run real jobs (your paper-mill traffic logic is a natural
 candidate) on live hardware for weeks; capture faults via the diagnostic event; iterate
@@ -408,3 +424,39 @@ Pre-commit to a line: integers, booleans, events, timers in v1; revisit only wit
 evidence. If demand for a rich language materializes, that is the moment to evaluate a
 MicroPython tier on RP2350-only hardware rather than growing EventScript into a worse
 MicroPython.
+
+---
+
+## 8. External Coordination (OpenLcbCLib and JMRI)
+
+**Integration contract with OpenLcbCLib.** Whether the engine ships as a portable
+extension to the library or is integrated into it, the boundary is the same five
+touchpoints, and writing them as an explicit header-level contract is what lets the
+engine core and the stack binding be developed by different people without friction:
+(1) event-consumed notification → an O(1) inbox push carrying the binding index;
+(2) an event-produce call; (3) configuration-memory hooks — write dispatch for the
+action byte and dirty-marking, read service for the status/monitor space, and
+address-space registration/info for space 0x50; (4) a periodic tick feeding the
+scheduler slice and the clock module's timebase; (5) emission of Identify
+Producer/Consumer responses and boot-time Identified reports from the binding tables
+plus retained state. The engine core (compiler, VM, clock, slot manager) includes no
+OpenLcbCLib headers and is reached only through that contract. Two portability rules
+matter because the library's supported targets are wider than the Pico: fixed-width
+`stdint` types everywhere (some supported MCUs have 16-bit `int`), and all NVM/CDI
+serialization through explicit big-endian pack/unpack functions — never memcpy'd
+native structs, whose padding and endianness vary by target. Naming conventions and
+license should simply follow the host library's; both are conversations to have with
+its author before M2 code exists, since they're free to adopt then and costly to
+retrofit.
+
+**Tooling contract with JMRI.** The editor story deliberately avoids a second compiler:
+the node is the authoritative validator. An editor writes source over standard memory
+datagrams, pokes the Validate action, and reads back state/line/column/message from
+the status space — which promotes those fields from "human debugging aid" to a
+**stable, versioned machine interface**. That is why the global status block carries
+engine and language version bytes: a tool adapts to what the node actually runs. The
+corresponding obligation on this side is the M7 language freeze: JMRI builds an editor
+against v1.0, not against a moving draft, and the freeze package (grammar, example
+corpus with expected behavior, error corpus) is the artifact their work keys off.
+Until the freeze, the spec's changelog is the coordination channel — every version
+bump should be visible to both collaborators.
