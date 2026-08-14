@@ -16,7 +16,16 @@ Per-project `CLAUDE.md` files document only what is specific to that node
 rather than restate these rules.
 
 **Current node projects**: `LCC_RPiPico_Turntable`, `LCC_RPiPico_Roundhouse`,
-`LCC_RPiPico_Clock_Lights`, `LCC_RPiPico_PixelLights`.
+`LCC_RPiPico_Clock_Lights`, `LCC_RPiPico_PixelLights`, `LCC_RPiPico_CommandStation`,
+`LCC_RPiPico_Booster`.
+
+> `LCC_RPiPico_CommandStation` and `LCC_RPiPico_Booster` are listed as of
+> Rev 15 but haven't yet reached the implementation phases (LCC/CAN
+> integration, CDI/EEPROM config memory) that this document's §7–§7.3
+> conventions govern — their own `work_plan.md`s track that separately.
+> Don't assume either one is compliant with §7.1's protected NVM region,
+> §7.3's SNIP derivation, etc. yet; check their own repos' status before
+> relying on it.
 
 ---
 
@@ -852,3 +861,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 12 | 2026-06-21 | Diagnosed a second Turntable v3.0 display bug, visible only after the above fix: stray CDI-XML-looking text appeared during the homing animation (not at the initial page draw, as first assumed). Four theories tried and disproven in sequence (scroll margins; unverified `fillScreen()`; unclamped `TrackCount` in `drawTracks()`; network/CAN crosstalk — invalidated immediately since the test node had no CAN connection at all) before the timing detail (appears after home page drawn, before homing completes) pointed at `drawBridge()`, called repeatedly from Core 0's `updateBridgeAnimation()` during homing. Real root cause: `drawBridge()` indexes `TrackName[ConfigMemHelper_config_data.CurrentTrack]` with no bounds check; `CurrentTrack` is a top-level `config_mem_t` field (not under `.attributes`), so none of the `_load_defaults_*` functions ever set it, leaving it at the post-`'r'`-wipe value of 255 after an `'i'` reset — 6375 bytes past the 20-entry flash-resident `TrackName[]` array, landing close enough to the embedded `_cdi_data[]` (also const/flash) to render genuine CDI text. Fixed: explicit default in `_load_defaults_attributes()`, clamp in `ConfigMemHelper_read()`, belt-and-suspenders clamp at the `drawBridge()` call site. Documented the full four-theory misdiagnosis under §6.1, with the general lesson that top-level (non-CDI) fields used as array indices are easy to miss precisely because no CDI/JMRI validation ever touches them. |
 | 13 | 2026-07-11 | Added `cdi_to_c_array.py` to this directory and documented it under §7 — a standalone port of `cdi_fdi_wizard.html`'s "Array" tab codegen (`_xmlToByteRows`/`renderByteArray` from the tool's own `cdi_editor/cdi_view.html` and `js/c_target.js`), verified byte-for-byte identical against the browser tool's output on both Turntable's and Roundhouse's paired-door-events CDI.xml. Lets `_cdi_data[]` in `openlcb_user_config.c` be regenerated/checked against `CDI.xml` without the browser tool. |
 | 14 | 2026-07-11 | Added §7.3 SNIP identity fields convention: `hardware_version` now derives from a `BOARD_HARDWARE_VERSION_STR` macro tied to the selected `LCC_BOARD_*` macro (defined per project in `BoardSettings.h`, next to the board dispatch) instead of being hand-maintained — eliminates a real, already-observed drift bug (all four projects' `.snip.hardware_version` and/or `CDI.xml`'s `<hardwareVersion>` had gone stale relative to the actual `LCC_BOARD_NODE_V30` in use, and two projects still had literal `MANU`/`MODEL` placeholders in `CDI.xml`). `software_version` now composed as `"<LCC_NODE_STANDARD_REVISION>.<patch>"` via the new `LCC_RPiPico_Common/StandardVersion.h`; this changelog's Rev column is that revision number. `CDI.xml`'s `<manufacturer>/<model>/<hardwareVersion>/<softwareVersion>` must mirror `.snip.name/model/hardware_version/software_version` exactly — since the CDI is a compiled byte array, changing any of these requires updating `CDI.xml` and rerunning `cdi_to_c_array.py`. Fixed the pre-existing drift in all four projects as part of adopting this. |
+| 15 | 2026-08-14 | Added `LCC_RPiPico_CommandStation` and `LCC_RPiPico_Booster` to the "Current node projects" list — both are real repos now (design-stage/early-hardware-bringup, not yet at LCC/CAN integration), added as its own edit per each project's own `work_plan.md` cross-repo-housekeeping item rather than bundled into an unrelated commit. Neither has reached the implementation phases §7–§7.3 govern yet — flagged inline in the project list rather than assumed compliant. |
