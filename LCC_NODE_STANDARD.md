@@ -502,7 +502,23 @@ defined offset/size so the offsets never shift as new items get added:
 | Offset (from `CONFIG_MEM_SIZE`) | Size | Item | Status |
 |---|---|---|---|
 | `+0` | 12 bytes | Node identity block (`node_identity_t` — magic, 6-byte node ID, CRC) | implemented (PixelLights) |
-| `+12` | 52 bytes | Reserved for future protected items | unallocated |
+| `+12` | 1 byte | `EEPROM_VERSION` marker — records which layout version last wrote real config-memory defaults (see the `EEPROM_VERSION` gap note below) | implemented (Booster) |
+| `+13` | 51 bytes | Reserved for future protected items | unallocated |
+
+**`EEPROM_VERSION` was defined but never actually checked anywhere in this
+family until Booster's Phase 2** — worth knowing if working in any other
+project here. `BoardSettings.h`'s own comment describes its intended
+purpose ("bump it whenever the CDI/struct layout changes, so a stale EEPROM
+gets reset to defaults rather than misread"), but `_check_for_nvm_initialization()`
+in every existing `.ino` only checks whether config-memory byte 0 is `0xFF`
+— it never compares a stored version marker against the firmware's own
+`EEPROM_VERSION`. A chip already initialized under an *older, smaller*
+`config_mem_t` still passes that "byte 0 isn't blank" check after a firmware
+update adds new struct fields, leaving the new fields as uninitialized
+leftover bytes rather than real defaults — this is exactly the bug that
+surfaced on Booster's own Phase 2 (`+12`'s new marker, above, plus the
+matching `_check_for_nvm_initialization()` logic in that project's `.ino`,
+is the fix; not yet backported to the other four projects).
 
 When a new protected item is needed, claim the next unused offset, document
 it in this table with its status, and shrink the "Reserved" row accordingly.
@@ -878,3 +894,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 14 | 2026-07-11 | Added §7.3 SNIP identity fields convention: `hardware_version` now derives from a `BOARD_HARDWARE_VERSION_STR` macro tied to the selected `LCC_BOARD_*` macro (defined per project in `BoardSettings.h`, next to the board dispatch) instead of being hand-maintained — eliminates a real, already-observed drift bug (all four projects' `.snip.hardware_version` and/or `CDI.xml`'s `<hardwareVersion>` had gone stale relative to the actual `LCC_BOARD_NODE_V30` in use, and two projects still had literal `MANU`/`MODEL` placeholders in `CDI.xml`). `software_version` now composed as `"<LCC_NODE_STANDARD_REVISION>.<patch>"` via the new `LCC_RPiPico_Common/StandardVersion.h`; this changelog's Rev column is that revision number. `CDI.xml`'s `<manufacturer>/<model>/<hardwareVersion>/<softwareVersion>` must mirror `.snip.name/model/hardware_version/software_version` exactly — since the CDI is a compiled byte array, changing any of these requires updating `CDI.xml` and rerunning `cdi_to_c_array.py`. Fixed the pre-existing drift in all four projects as part of adopting this. |
 | 15 | 2026-08-14 | Added `LCC_RPiPico_CommandStation` and `LCC_RPiPico_Booster` to the "Current node projects" list — both are real repos now (design-stage/early-hardware-bringup, not yet at LCC/CAN integration), added as its own edit per each project's own `work_plan.md` cross-repo-housekeeping item rather than bundled into an unrelated commit. Neither has reached the implementation phases §7–§7.3 govern yet — flagged inline in the project list rather than assumed compliant. |
 | 16 | 2026-08-14 | Added a §7.2 clarification, found during `LCC_RPiPico_Booster`'s Phase 0 pin-mapping session: `gp5`/`gp28` (Blue/Gold) only need to be the reset-gesture buttons for the brief window `_check_factory_reset_gesture()` runs at the very start of `setup()` — after it returns, both pins are free to repurpose for a node's own signals, provided that repurposed use happens *after* the check, not before. Previously only implicit (existing projects that share these pins away, like `LCC_RPiPico_CommandStation`'s `MAIN_nFAULT`/`RAILCOM_RX_PIN`, instead just give the button up entirely and mark it "unavailable") — now stated as an explicit, equally-valid alternative. |
+| 17 | 2026-08-14 | Added §7.1 registry entry `+12`: a 1-byte `EEPROM_VERSION` marker in the protected NVM region. Found during `LCC_RPiPico_Booster`'s Phase 2: `EEPROM_VERSION` was defined in every project's `BoardSettings.h` with a comment describing its intended purpose, but no project's `_check_for_nvm_initialization()` actually checked it — only "is config-memory byte 0 blank" was checked, which a chip already initialized under an older, smaller `config_mem_t` still passes after a firmware update adds new struct fields, leaving the new fields as uninitialized leftover bytes. Fixed in Booster (marker + updated `_check_for_nvm_initialization()`); not yet backported to the other four projects. |
