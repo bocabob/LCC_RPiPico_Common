@@ -670,6 +670,21 @@ void _check_factory_reset_gesture(void) {
   power-up. **Don't rely on this gesture being safe to use on a combo where
   Blue/Gold are documented as "unavailable"** — it works mechanically but
   isn't a clean button press in that case.
+- **Repurposing Blue/Gold for a node's own signals is fine, with one
+  ordering rule**: `gp5`/`gp28` only need to *be* Blue/Gold for the brief
+  window `_check_factory_reset_gesture()` runs — called once, at the very
+  start of `setup()`, before anything else touches those pins. Once it
+  returns (held-both/held-one branches to reset handling; otherwise normal
+  init proceeds), both pins are free to repurpose for the node's own
+  signals, same as any other GPIO. **The only rule is ordering**: any
+  repurposed use of `gp5`/`gp28` must happen *after* the gesture check
+  returns, not before — initializing them for another role first would make
+  the reset gesture unreliable. This is a different (and generally
+  preferable, when the pin budget is tight) choice than giving up the
+  button entirely and documenting the pin as "unavailable" (§6.1's
+  `MAIN_nFAULT`/`RAILCOM_RX_PIN` on `LCC_RPiPico_CommandStation` do this) —
+  both are valid, pick whichever fits the node; this bullet just makes
+  explicit what was previously only implicit.
 
 **Status**: implemented in all four current node projects as of 2026-06-21.
 
@@ -862,3 +877,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 13 | 2026-07-11 | Added `cdi_to_c_array.py` to this directory and documented it under §7 — a standalone port of `cdi_fdi_wizard.html`'s "Array" tab codegen (`_xmlToByteRows`/`renderByteArray` from the tool's own `cdi_editor/cdi_view.html` and `js/c_target.js`), verified byte-for-byte identical against the browser tool's output on both Turntable's and Roundhouse's paired-door-events CDI.xml. Lets `_cdi_data[]` in `openlcb_user_config.c` be regenerated/checked against `CDI.xml` without the browser tool. |
 | 14 | 2026-07-11 | Added §7.3 SNIP identity fields convention: `hardware_version` now derives from a `BOARD_HARDWARE_VERSION_STR` macro tied to the selected `LCC_BOARD_*` macro (defined per project in `BoardSettings.h`, next to the board dispatch) instead of being hand-maintained — eliminates a real, already-observed drift bug (all four projects' `.snip.hardware_version` and/or `CDI.xml`'s `<hardwareVersion>` had gone stale relative to the actual `LCC_BOARD_NODE_V30` in use, and two projects still had literal `MANU`/`MODEL` placeholders in `CDI.xml`). `software_version` now composed as `"<LCC_NODE_STANDARD_REVISION>.<patch>"` via the new `LCC_RPiPico_Common/StandardVersion.h`; this changelog's Rev column is that revision number. `CDI.xml`'s `<manufacturer>/<model>/<hardwareVersion>/<softwareVersion>` must mirror `.snip.name/model/hardware_version/software_version` exactly — since the CDI is a compiled byte array, changing any of these requires updating `CDI.xml` and rerunning `cdi_to_c_array.py`. Fixed the pre-existing drift in all four projects as part of adopting this. |
 | 15 | 2026-08-14 | Added `LCC_RPiPico_CommandStation` and `LCC_RPiPico_Booster` to the "Current node projects" list — both are real repos now (design-stage/early-hardware-bringup, not yet at LCC/CAN integration), added as its own edit per each project's own `work_plan.md` cross-repo-housekeeping item rather than bundled into an unrelated commit. Neither has reached the implementation phases §7–§7.3 govern yet — flagged inline in the project list rather than assumed compliant. |
+| 16 | 2026-08-14 | Added a §7.2 clarification, found during `LCC_RPiPico_Booster`'s Phase 0 pin-mapping session: `gp5`/`gp28` (Blue/Gold) only need to be the reset-gesture buttons for the brief window `_check_factory_reset_gesture()` runs at the very start of `setup()` — after it returns, both pins are free to repurpose for a node's own signals, provided that repurposed use happens *after* the check, not before. Previously only implicit (existing projects that share these pins away, like `LCC_RPiPico_CommandStation`'s `MAIN_nFAULT`/`RAILCOM_RX_PIN`, instead just give the button up entirely and mark it "unavailable") — now stated as an explicit, equally-valid alternative. |
