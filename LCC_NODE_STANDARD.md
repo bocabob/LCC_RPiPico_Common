@@ -802,9 +802,30 @@ Consistent across all four current projects:
 ## 10. OpenLCB Integration Rules
 
 - The OpenLCB stack (`src/openlcb/`, `src/drivers/canbus/`) is the vendored
-  MustangPeak `OpenLcbClib` C library. **Do not modify files under `src/`.**
-  If stock behavior needs to change, do it at the call site in `callbacks.cpp`
-  or the node's own code, not inside the library.
+  MustangPeak `OpenLcbClib` C library, and `LCC_RPiPico_CommandStation` also
+  vendors OpenDccCLib under `src/dcc/` (same author, Jim Kueneman).
+  **Don't change vendored library code to suit a node.** If stock behavior
+  needs to differ — a policy, a convenience, a feature — do it at the call
+  site in `callbacks.cpp` or the node's own code, not inside the library.
+- **The one exception is a genuine error in a vendored library** — a wrong
+  result, hang, crash, spec violation, or code that is never wired up.
+  Fixing it in the vendored copy is allowed, but the fix must go back up
+  through git as a suggested fix, so every such change must be:
+  1. **minimal** — only what the bug needs, no cleanup riding along;
+  2. **marked** in the code with a dated comment saying it is a local fix for
+     an upstream bug;
+  3. **listed** in the repo's `upstream_fixes/README.md` ledger (create it
+     with the first fix; it also records which upstream commit the vendored
+     copy was taken from); and
+  4. **sent upstream as a suggested fix** — a patch (or branch) against
+     upstream HEAD with a description, the hardware or spec evidence, and the
+     library's own unit tests updated — drafted in `upstream_fixes/` and
+     submitted as a pull request or issue only when the user says so.
+
+  Once upstream has merged the fix, re-vendor and drop the marker and the
+  ledger row. Until then a re-vendor silently reverts the local fix, which is
+  why the ledger has to exist (`LCC_RPiPico_CommandStation/upstream_fixes/`
+  is the worked example).
 - All consumer/producer registration and LCC event dispatch happens in
   `callbacks.cpp`/`.h` — this is the single integration seam between the LCC
   network and node-specific logic. Node logic files (`Turntable.cpp`,
@@ -898,3 +919,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 17 | 2026-08-14 | Added §7.1 registry entry `+12`: a 1-byte `EEPROM_VERSION` marker in the protected NVM region. Found during `LCC_RPiPico_Booster`'s Phase 2: `EEPROM_VERSION` was defined in every project's `BoardSettings.h` with a comment describing its intended purpose, but no project's `_check_for_nvm_initialization()` actually checked it — only "is config-memory byte 0 blank" was checked, which a chip already initialized under an older, smaller `config_mem_t` still passes after a firmware update adds new struct fields, leaving the new fields as uninitialized leftover bytes. Fixed in Booster (marker + updated `_check_for_nvm_initialization()`); not yet backported to the other four projects. |
 | 18 | 2026-08-14 | Added `OneWire`/`DallasTemperature` to §2's Fixed Toolchain table — `LCC_RPiPico_Booster`'s Phase 4 is the first use of a 1-Wire sensor (DS18B20) anywhere in this fleet. Also worth recording here since it came up during that same design session: OpenLcbCLib's vendored event-transport layer currently implements the *receive* side of "PC Event Report with payload" but has no application-level send function for it — producing an event that carries an actual numeric value isn't available yet. Booster's telemetry design works around this today (CDI-readable live values instead of pushed numeric events), but this isn't a permanent architectural limit — flagging it here in case it's useful context if OpenLcbCLib ever grows a send-with-payload function, which would let telemetry (and similar future needs) push real values instead of just threshold-crossing events. |
 | 19 | 2026-08-16 | **Correction to Rev 18**: OpenLcbCLib's author (Jim Kueneman) clarified that sending "PC Event Report with payload" (`MTI_PC_EVENT_REPORT_WITH_PAYLOAD`) is not actually blocked — the framework's underlying primitives (`OpenLcbUtilities_copy_word_to_openlcb_payload()`, `OpenLcbMainStatemachine_send_with_sibling_dispatch()`) already fully support building and sending such a message; there's just no ready-made `OpenLcbApplication`-level convenience wrapper for it (only `OpenLcbApplication_send_event_pc_report()`/`_send_event_with_mti()` exist, and both only ever write the 8-byte event ID). `LCC_RPiPico_Booster`'s Phase 4 now implements this itself — a small `_send_event_pc_report_with_word_payload()` helper in that project's own `callbacks.cpp` (not in vendored `src/openlcb/`, per this document's vendoring convention) — so its Telemetry Warning/Normal events now carry the actual reading as payload, not just a bare notification. Worth a fleet-wide look if a future node needs to push a numeric value as an event payload: this pattern is reusable, not Booster-specific. |
+| 20 | 2026-09-19 | Loosened §10's vendored-library rule (it was a flat "do not modify files under `src/`"): fixing a genuine *error* in a vendored Jim Kueneman library (OpenLcbCLib in the node repos, OpenDccCLib in `LCC_RPiPico_CommandStation`) in place is now allowed, provided the fix is minimal, marked in the code, listed in the repo's `upstream_fixes/README.md` ledger, and passed back up to the library's upstream repo through git as a suggested fix (drafted locally, submitted only when the user says so). Changing library behavior for any other reason is still off-limits — do it at the call site. Prompted by `LCC_RPiPico_CommandStation`, whose vendored `src/dcc/` had quietly accumulated ten locally patched files (silent service-mode hangs and a crash, non-standard RailCom 4/8 tables, ...) under the old flat rule with no record of what belonged upstream; that repo now has the ledger and seven drafted patches. Bumps `LCC_NODE_STANDARD_REVISION` to 20, so each node's next `software_version` reads `"20.<patch>"` and, per §7.3, its `CDI.xml` `<softwareVersion>` needs the usual mirror and a `cdi_to_c_array.py` rerun. Not yet carried into the per-project docs that still repeat the old flat sentence: the READMEs of Turntable, Roundhouse, Clock_Lights and PixelLights, and Roundhouse's `CLAUDE.md`. |
