@@ -19,13 +19,23 @@ rather than restate these rules.
 `LCC_RPiPico_Clock_Lights`, `LCC_RPiPico_PixelLights`, `LCC_RPiPico_CommandStation`,
 `LCC_RPiPico_Booster`.
 
-> `LCC_RPiPico_CommandStation` and `LCC_RPiPico_Booster` are listed as of
-> Rev 15 but haven't yet reached the implementation phases (LCC/CAN
-> integration, CDI/EEPROM config memory) that this document's §7–§7.3
-> conventions govern — their own `work_plan.md`s track that separately.
-> Don't assume either one is compliant with §7.1's protected NVM region,
-> §7.3's SNIP derivation, etc. yet; check their own repos' status before
-> relying on it.
+> `LCC_RPiPico_CommandStation` and `LCC_RPiPico_Booster` (listed since
+> Rev 15) are both past LCC/CAN integration and have CDI/EEPROM config
+> memory now. `LCC_RPiPico_CommandStation` was checked against §7–§7.3 on
+> 2026-09-24: §7.1 (protected region at `CONFIG_MEM_SIZE`, identity block
+> at +0, `EEPROM_VERSION` marker at +12) and §7.3 (SNIP and `CDI.xml`
+> mirror) are followed as written. Two deliberate deviations:
+> - **§7's generated `Documentation/` artifacts**: it has none. Its CDI
+>   byte layout is a hand-written `src/config/config_mem_layout.h`, and
+>   `tools/check_cdi.py --fix-array` regenerates `_cdi_data[]` and checks
+>   every CDI address, range and map against that header.
+> - **§7.2's Blue+Gold gesture**: not implemented. `gp5`/`gp28` are
+>   `MAIN_nFAULT` and `SVC_CS_PIN` from boot, so the buttons are gone. Its
+>   CDI "Reset Control" value (clear configuration at the next reset) does
+>   the same job; the node ID is untouched either way, as §7.2 requires.
+>
+> `LCC_RPiPico_Booster` has not been audited against §7–§7.3 here; check
+> its own repo before relying on it.
 
 ---
 
@@ -699,7 +709,7 @@ void _check_factory_reset_gesture(void) {
   the reset gesture unreliable. This is a different (and generally
   preferable, when the pin budget is tight) choice than giving up the
   button entirely and documenting the pin as "unavailable" (§6.1's
-  `MAIN_nFAULT`/`RAILCOM_RX_PIN` on `LCC_RPiPico_CommandStation` do this) —
+  `MAIN_nFAULT`/`SVC_CS_PIN` on `LCC_RPiPico_CommandStation` do this) —
   both are valid, pick whichever fits the node; this bullet just makes
   explicit what was previously only implicit.
 
@@ -920,3 +930,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 18 | 2026-08-14 | Added `OneWire`/`DallasTemperature` to §2's Fixed Toolchain table — `LCC_RPiPico_Booster`'s Phase 4 is the first use of a 1-Wire sensor (DS18B20) anywhere in this fleet. Also worth recording here since it came up during that same design session: OpenLcbCLib's vendored event-transport layer currently implements the *receive* side of "PC Event Report with payload" but has no application-level send function for it — producing an event that carries an actual numeric value isn't available yet. Booster's telemetry design works around this today (CDI-readable live values instead of pushed numeric events), but this isn't a permanent architectural limit — flagging it here in case it's useful context if OpenLcbCLib ever grows a send-with-payload function, which would let telemetry (and similar future needs) push real values instead of just threshold-crossing events. |
 | 19 | 2026-08-16 | **Correction to Rev 18**: OpenLcbCLib's author (Jim Kueneman) clarified that sending "PC Event Report with payload" (`MTI_PC_EVENT_REPORT_WITH_PAYLOAD`) is not actually blocked — the framework's underlying primitives (`OpenLcbUtilities_copy_word_to_openlcb_payload()`, `OpenLcbMainStatemachine_send_with_sibling_dispatch()`) already fully support building and sending such a message; there's just no ready-made `OpenLcbApplication`-level convenience wrapper for it (only `OpenLcbApplication_send_event_pc_report()`/`_send_event_with_mti()` exist, and both only ever write the 8-byte event ID). `LCC_RPiPico_Booster`'s Phase 4 now implements this itself — a small `_send_event_pc_report_with_word_payload()` helper in that project's own `callbacks.cpp` (not in vendored `src/openlcb/`, per this document's vendoring convention) — so its Telemetry Warning/Normal events now carry the actual reading as payload, not just a bare notification. Worth a fleet-wide look if a future node needs to push a numeric value as an event payload: this pattern is reusable, not Booster-specific. |
 | 20 | 2026-09-19 | Loosened §10's vendored-library rule (it was a flat "do not modify files under `src/`"): fixing a genuine *error* in a vendored Jim Kueneman library (OpenLcbCLib in the node repos, OpenDccCLib in `LCC_RPiPico_CommandStation`) in place is now allowed, provided the fix is minimal, marked in the code, listed in the repo's `upstream_fixes/README.md` ledger, and passed back up to the library's upstream repo through git as a suggested fix (drafted locally, submitted only when the user says so). Changing library behavior for any other reason is still off-limits — do it at the call site. Prompted by `LCC_RPiPico_CommandStation`, whose vendored `src/dcc/` had quietly accumulated ten locally patched files (silent service-mode hangs and a crash, non-standard RailCom 4/8 tables, ...) under the old flat rule with no record of what belonged upstream; that repo now has the ledger and seven drafted patches. Bumps `LCC_NODE_STANDARD_REVISION` to 20, so each node's next `software_version` reads `"20.<patch>"` and, per §7.3, its `CDI.xml` `<softwareVersion>` needs the usual mirror and a `cdi_to_c_array.py` rerun. Not yet carried into the per-project docs that still repeat the old flat sentence: the READMEs of Turntable, Roundhouse, Clock_Lights and PixelLights, and Roundhouse's `CLAUDE.md`. |
+| 21 | 2026-09-24 | Replaced the Rev 15 note under "Current node projects", which said `LCC_RPiPico_CommandStation` and `LCC_RPiPico_Booster` hadn't reached the §7–§7.3 phases. Both have CDI/EEPROM config memory now. CommandStation was checked: §7.1 and §7.3 are followed as written; it has no generated `Documentation/` artifacts (a hand-written layout header checked by its own `tools/check_cdi.py` instead), and no §7.2 gesture (`gp5`/`gp28` are `MAIN_nFAULT`/`SVC_CS_PIN` from boot; its CDI "Reset Control" value does the same job). Booster is not audited here. Also fixed §7.2's example of a node that gave up the buttons: CommandStation's `gp28` is `SVC_CS_PIN`, not `RAILCOM_RX_PIN` (that moved to `gp27`). Documentation only, no rule changed; nodes pick up `"21.<patch>"` at their next release, per §7.3. |
