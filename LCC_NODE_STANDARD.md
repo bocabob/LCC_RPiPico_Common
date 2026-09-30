@@ -221,20 +221,27 @@ the node's GND.
 | **Booster** | **Isolated CAN** (e.g. ISO1044) **and an isolated pins 4/5 DCC input** | Its track ground joins the command station's through booster common, so its bus side must float from its power side. That is a property of the booster's design; a switch cannot set it |
 | USB-LCC adapter, or a node used as one (e.g. the command station's USB hub on the layout) | **Isolated**, on the USB side or the CAN side | The PC's ground is a second ground. Otherwise keep USB for the bench |
 
-**Bus power (v3.1): J3, one three-position switch, Same Sky SLW-156646-5A-N-D (SP3T, 500 mA).**
+**Bus power (v3.1): J3, four 2.54 mm header pins in a T and one shunt** (footprint
+`LCC:PinHeader_T4_P2.54mm_LCC_PowerSelect`, positions printed on the silkscreen). The shunt joins
+the common pin (the node's rail) to one of:
 
 | Position | Power |
 |---|---|
 | **BUS** | Bus power into the node through D2/D3. VEXT, if connected, is OR-ed in but never reaches the bus |
 | **INJECT** | The node's rail is wired to the bus. VEXT feeds the bus, or the bus feeds the node without VEXT |
-| **LOCAL** | Bus power not used; VEXT only |
+| **LOCAL** (parking pin, or no shunt) | Bus power not used; VEXT only |
 
 Rules for bus power:
 - **INJECT:** VEXT must be 9–15 V (the standard's range for a supplying node), from a supply that
   powers nothing else ground-referenced. Never inject from a track supply.
-- **Current:** a supplying node may provide at most 500 mA, and must be labelled with its
-  maximum. The switch is rated 500 mA; the bus-power PTCs are 500 mA hold (Bel Fuse
-  0ZCG0050AF2C, 1812), one per jack.
+- **Current:** a supplying node may provide 500 mA per jack (TN-9.7.1.1: jacks either share
+  500 mA or are powered separately at up to 500 mA each), and must be labelled with its maximum.
+  - v3.1 has one 500 mA PTC per jack (Bel Fuse 0ZCG0050AF2C, 1812), so INJECT can pass up to
+    1 A through J3.
+  - That is why J3 is a header and shunt (rated 2–3 A), not a slide switch: miniature slides
+    top out at 500 mA.
+  - The shunt's geometry allows only one position at a time: the outer pins are 5.08 mm apart
+    and the diagonals 3.6 mm.
 
 **Other v3.1 rules:**
 1. A CAN ESD diode (NUP2105L) on CANH/CANL.
@@ -982,3 +989,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 21 | 2026-09-24 | Replaced the Rev 15 note under "Current node projects", which said `LCC_RPiPico_CommandStation` and `LCC_RPiPico_Booster` hadn't reached the §7–§7.3 phases. Both have CDI/EEPROM config memory now. CommandStation was checked: §7.1 and §7.3 are followed as written; it has no generated `Documentation/` artifacts (a hand-written layout header checked by its own `tools/check_cdi.py` instead), and no §7.2 gesture (`gp5`/`gp28` are `MAIN_nFAULT`/`SVC_CS_PIN` from boot; its CDI "Reset Control" value does the same job). Booster is not audited here. Also fixed §7.2's example of a node that gave up the buttons: CommandStation's `gp28` is `SVC_CS_PIN`, not `RAILCOM_RX_PIN` (that moved to `gp27`). Documentation only, no rule changed; nodes pick up `"21.<patch>"` at their next release, per §7.3. |
 | 22 | 2026-09-30 | Added §4.1, LCC bus power, grounds and CAN isolation, for Node board v3.1 and later. It adds two ground domains, and one user-set MODE switch with three positions: BUS, INJECT and ISOLATED. The MOSFETs switch the power, not the switch. It also requires: an isolated CAN transceiver (ISO1044) referenced to CAN_GND; RJ45 pins 3 and 6 tied (S-9.7.1.1); 500 mA PTCs; no on-board termination; nothing on the logic side wired to a bus-side net. DCC nodes (the command station and the Booster) always run ISOLATED. Prompted by Balazs Racz's review of the CommandStation README on the OpenLCB list. Hardware rules only: no firmware change. Nodes pick up `"22.<patch>"` at their next release, per §7.3. |
 | 23 | 2026-09-30 | Rewrote §4.1 after Balazs Racz (TCS) replied on the OpenLCB list. Rev 22 made every node isolated-capable (ISO1044 plus a BUS / INJECT / ISOLATED switch driving MOSFETs) and said DCC nodes always run ISOLATED; both are withdrawn. Now: every node ties RJ45 pins 3, 6 and 7 to GND; accessory nodes and the command station are not isolated, and the command station is the ground reference; isolation belongs only in boosters (CAN and the pins 4/5 DCC input) and in USB-LCC adapters. v3.1 bus power is one SP3T 500 mA switch (BUS / INJECT / LOCAL) carrying the power itself; a NUP2105L ESD diode and 500 mA PTCs stay. Hardware rules only, no firmware change. |
+| 24 | 2026-09-30 | §4.1: v3.1's bus-power select J3 is four header pins in a T plus one shunt, not a slide switch. With one 500 mA PTC per jack, which TN-9.7.1.1 allows ("separately power them up to 0.5A each"), INJECT can pass up to 1 A through J3, and miniature slide switches are rated 500 mA at most. Also corrects the current rule to 500 mA per jack. |
