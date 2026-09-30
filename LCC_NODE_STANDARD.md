@@ -45,7 +45,7 @@ rather than restate these rules.
 2. [Fixed Toolchain & Libraries](#2-fixed-toolchain--libraries)
 3. [Reference Node Architecture](#3-reference-node-architecture)
 4. [Board Versioning Convention](#4-board-versioning-convention)
-   - [4.1 LCC Bus Power, Grounds and CAN Isolation (Node board v3.1+)](#41-lcc-bus-power-grounds-and-can-isolation-node-board-v31)
+   - [4.1 LCC Grounds, Bus Power and Isolation (Node board v3.1+)](#41-lcc-grounds-bus-power-and-isolation-node-board-v31)
 5. [Pin Assignment Registry](#5-pin-assignment-registry)
 6. [Breakout Board Catalog](#6-breakout-board-catalog)
 7. [Configuration Memory (CDI/EEPROM) Conventions](#7-configuration-memory-cdieeprom-conventions)
@@ -201,61 +201,53 @@ mdebugging.h               ← shared dP()/dPH()/dPS() debug macro family,
      past revisions (v2.95 stepper) and is the single most important thing
      to get right in a new board header.
 
-### 4.1 LCC Bus Power, Grounds and CAN Isolation (Node board v3.1+)
+### 4.1 LCC Grounds, Bus Power and Isolation (Node board v3.1+)
 
-**Why.** A ground loop forms when two separate grounds are joined in two places. For
-example:
-- a command station's track supply is tied to booster common and also to the LCC cable;
-- a node is on USB to a PC and also on the LCC cable.
+**Grounds (every node).** RJ45 pins 3 and 6 (CAN_GND, CAN_SHIELD) and pin 7 (PWR_NEG) are tied to
+the node's GND.
+- S-9.7.1.1 requires pins 3 and 6 to be joined. It permits tying pin 7 to them, and OpenLCB
+  devices do so.
+- On v3.1, JP1 ties pin 7 and JP4 ties pins 3/6; both are solder jumpers that ship bridged.
+- TN-9.7.1.1's alternative to a straight tie is 10 Ω plus a ferrite bead. The jumpers leave room
+  for that; it is not the default.
+- v3.0 and earlier tied pin 7 only, and left 3/6 unconnected.
 
-Current then circulates through the thin cable conductors and the node boards. Each
-wall-wart or bench supply output floats on its own, so one connection between two of
-them is harmless. It is the second connection that makes the loop. (Balazs Racz, TCS,
-raised this on the OpenLCB list, 2026-09-30.)
+**Who is isolated (Balazs Racz, TCS, on the OpenLCB list, 2026-09-30):**
 
-**Two ground domains on every v3.1+ board:**
+| Device | Isolation | Why |
+|---|---|---|
+| Accessory node (bus power, or its own supply that powers nothing else) | **None.** Plain transceiver (MCP2562FD), grounds tied | Only one ground connection, so no loop. An isolated transceiver would be cost and parts limits for nothing |
+| **Command station** | **None.** Its ground *is* the reference | Its track ground is the LCC bus ground, the booster-common reference, and the reference for the DCC it drives on pins 4/5 |
+| **Booster** | **Isolated CAN** (e.g. ISO1044) **and an isolated pins 4/5 DCC input** | Its track ground joins the command station's through booster common, so its bus side must float from its power side. That is a property of the booster's design; a switch cannot set it |
+| USB-LCC adapter, or a node used as one (e.g. the command station's USB hub on the layout) | **Isolated**, on the USB side or the CAN side | The PC's ground is a second ground. Otherwise keep USB for the bench |
 
-| Domain | Nets |
+**Bus power (v3.1): J3, one three-position switch, Same Sky SLW-156646-5A-N-D (SP3T, 500 mA).**
+
+| Position | Power |
 |---|---|
-| Bus side | CANH/CANL; **CAN_GND = RJ45 pins 3 and 6, tied together** (S-9.7.1.1 "Nodes shall connect conductors 3 and 6"); PWR_NEG (pin 7, net `BGND`); PWR_POS (pin 8, `VLCC` after the PTCs); the transceiver's isolated supply |
-| Logic side | The Pico and everything on the breakouts; VEXT; the node's input rail (`VRAIL`) |
+| **BUS** | Bus power into the node through D2/D3. VEXT, if connected, is OR-ed in but never reaches the bus |
+| **INJECT** | The node's rail is wired to the bus. VEXT feeds the bus, or the bus feeds the node without VEXT |
+| **LOCAL** | Bus power not used; VEXT only |
 
-**Three modes, one board.** The **user** picks the mode on the node, with one three-position
-MODE switch. The builder does not choose it.
+Rules for bus power:
+- **INJECT:** VEXT must be 9–15 V (the standard's range for a supplying node), from a supply that
+  powers nothing else ground-referenced. Never inject from a track supply.
+- **Current:** a supplying node may provide at most 500 mA, and must be labelled with its
+  maximum. The switch is rated 500 mA; the bus-power PTCs are 500 mA hold (Bel Fuse
+  0ZCG0050AF2C, 1812), one per jack.
 
-| Mode | Power | Logic GND = PWR_NEG | CAN_GND = PWR_NEG | Use it for |
-|---|---|---|---|---|
-| **1 BUS** | From the LCC bus. VEXT, if fitted, is OR-ed in but never reaches the bus | Yes | No | Most accessory nodes, including moderate NeoPixel lighting. The node has no other ground connection |
-| **2 INJECT** | VEXT feeds the node **and** the bus; the bus feeds the node if VEXT is absent | Yes | Yes (through 100 Ω) | Adding bus power at a point on the layout. VEXT must be 9–15 V and a supply that powers nothing else ground-referenced |
-| **3 ISOLATED** | VEXT only | No | No | The command station, the Booster, anything tied to track ground or booster common, and any node left on USB to a PC. **Always ISOLATED for DCC nodes** |
-
-**Rules for boards and breakouts:**
-1. **Nothing on the logic side may connect to a bus-side net except through the mode switching.**
-   This includes indicator LEDs. For example, v3.0's "bus power" LED returned to logic GND, a
-   3 kΩ path across the isolation. On v3.1 it returns to `BGND`.
-2. **The CAN transceiver is an isolated one**, referenced to CAN_GND: ISO1044 on v3.1, with an
-   isolated DC/DC and a 5 V regulator for its bus side, and a CAN ESD diode on the bus side.
-   v3.0 and earlier (MCP2562FD) referenced CAN to PWR_NEG and left pins 3/6 unconnected.
-   - A mixed bus works best with CAN_GND tied to PWR_NEG at one point at least. An INJECT
-     node makes that tie itself.
-3. **Power switching is done by MOSFETs, not by the switch.**
-   - Small slide switches are rated 0.3 A or less. The bus-power path carries up to 500 mA
-     drawn, or up to 1 A injected (two 500 mA PTCs, one per jack).
-   - The MODE switch carries only gate drive.
-   - Gates that bus-side voltage can reach are clamped to 10 V: the standard says the power
-     conductors may see 27 V.
-4. **No bus termination on the node board.** It is optional in S-9.7.1.1; use plug-in
-   terminators (RR-CirKits).
-5. **Bus-power PTCs are 500 mA hold** (Bel Fuse 0ZCG0050AF2C, 1812).
-6. **The isolation is functional, for ground loops.** It is limited to about 30 V by the
-   switching FETs, not the transceiver's 3 kV. It is not safety isolation.
+**Other v3.1 rules:**
+1. A CAN ESD diode (NUP2105L) on CANH/CANL.
+2. No bus termination on the node board. It is optional in S-9.7.1.1; use plug-in terminators
+   (RR-CirKits).
+3. No firmware change: the CAN controller (MCP2518FD) and its pins are unchanged.
 
 **Boards:**
-- **The v3.1 Node board** (`KiCad/LCC-Pico-Node_v3-1`) implements all of this; its design
-  note has the circuit, parts and bench plan.
-- **The Lite board** is bus-powered only and non-isolated, which the rules allow: it has no
-  second ground.
-- **No firmware change.** The CAN controller (MCP2518FD) and its pins are unchanged.
+- **v3.1** (`KiCad/LCC-Pico-Node_v3-1`) implements this; its design note has the details.
+- **The Lite board** is bus-powered only, which these rules allow.
+- An isolated transceiver design (ISO1044 plus an isolated 5 V) was drawn for v3.1 first and
+  withdrawn the same day, for the reasons in the table. It is kept in that project's backups as a
+  starting point for the Booster.
 
 ## 5. Pin Assignment Registry
 
@@ -989,3 +981,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 20 | 2026-09-19 | Loosened §10's vendored-library rule (it was a flat "do not modify files under `src/`"): fixing a genuine *error* in a vendored Jim Kueneman library (OpenLcbCLib in the node repos, OpenDccCLib in `LCC_RPiPico_CommandStation`) in place is now allowed, provided the fix is minimal, marked in the code, listed in the repo's `upstream_fixes/README.md` ledger, and passed back up to the library's upstream repo through git as a suggested fix (drafted locally, submitted only when the user says so). Changing library behavior for any other reason is still off-limits — do it at the call site. Prompted by `LCC_RPiPico_CommandStation`, whose vendored `src/dcc/` had quietly accumulated ten locally patched files (silent service-mode hangs and a crash, non-standard RailCom 4/8 tables, ...) under the old flat rule with no record of what belonged upstream; that repo now has the ledger and seven drafted patches. Bumps `LCC_NODE_STANDARD_REVISION` to 20, so each node's next `software_version` reads `"20.<patch>"` and, per §7.3, its `CDI.xml` `<softwareVersion>` needs the usual mirror and a `cdi_to_c_array.py` rerun. Not yet carried into the per-project docs that still repeat the old flat sentence: the READMEs of Turntable, Roundhouse, Clock_Lights and PixelLights, and Roundhouse's `CLAUDE.md`. |
 | 21 | 2026-09-24 | Replaced the Rev 15 note under "Current node projects", which said `LCC_RPiPico_CommandStation` and `LCC_RPiPico_Booster` hadn't reached the §7–§7.3 phases. Both have CDI/EEPROM config memory now. CommandStation was checked: §7.1 and §7.3 are followed as written; it has no generated `Documentation/` artifacts (a hand-written layout header checked by its own `tools/check_cdi.py` instead), and no §7.2 gesture (`gp5`/`gp28` are `MAIN_nFAULT`/`SVC_CS_PIN` from boot; its CDI "Reset Control" value does the same job). Booster is not audited here. Also fixed §7.2's example of a node that gave up the buttons: CommandStation's `gp28` is `SVC_CS_PIN`, not `RAILCOM_RX_PIN` (that moved to `gp27`). Documentation only, no rule changed; nodes pick up `"21.<patch>"` at their next release, per §7.3. |
 | 22 | 2026-09-30 | Added §4.1, LCC bus power, grounds and CAN isolation, for Node board v3.1 and later. It adds two ground domains, and one user-set MODE switch with three positions: BUS, INJECT and ISOLATED. The MOSFETs switch the power, not the switch. It also requires: an isolated CAN transceiver (ISO1044) referenced to CAN_GND; RJ45 pins 3 and 6 tied (S-9.7.1.1); 500 mA PTCs; no on-board termination; nothing on the logic side wired to a bus-side net. DCC nodes (the command station and the Booster) always run ISOLATED. Prompted by Balazs Racz's review of the CommandStation README on the OpenLCB list. Hardware rules only: no firmware change. Nodes pick up `"22.<patch>"` at their next release, per §7.3. |
+| 23 | 2026-09-30 | Rewrote §4.1 after Balazs Racz (TCS) replied on the OpenLCB list. Rev 22 made every node isolated-capable (ISO1044 plus a BUS / INJECT / ISOLATED switch driving MOSFETs) and said DCC nodes always run ISOLATED; both are withdrawn. Now: every node ties RJ45 pins 3, 6 and 7 to GND; accessory nodes and the command station are not isolated, and the command station is the ground reference; isolation belongs only in boosters (CAN and the pins 4/5 DCC input) and in USB-LCC adapters. v3.1 bus power is one SP3T 500 mA switch (BUS / INJECT / LOCAL) carrying the power itself; a NUP2105L ESD diode and 500 mA PTCs stay. Hardware rules only, no firmware change. |
