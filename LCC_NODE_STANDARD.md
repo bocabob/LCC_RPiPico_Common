@@ -233,7 +233,8 @@ the common pin (the node's rail) to one of:
 
 Rules for bus power:
 - **INJECT:** VEXT must be 9–15 V (the standard's range for a supplying node), from a supply that
-  powers nothing else ground-referenced. Never inject from a track supply.
+  powers nothing else ground-referenced. Never inject from a track supply; the one exception is
+  the command station's own regulator (below).
 - **Current:** a supplying node may provide 500 mA per jack (TN-9.7.1.1: jacks either share
   500 mA or are powered separately at up to 500 mA each), and must be labelled with its maximum.
   - v3.1 has one 500 mA PTC per jack (Bel Fuse 0ZCG0050AF2C, 1812), so INJECT can pass up to
@@ -242,6 +243,36 @@ Rules for bus power:
     top out at 500 mA.
   - The shunt's geometry allows only one position at a time: the outer pins are 5.08 mm apart
     and the diagonals 3.6 mm.
+
+**Bus power on DCC devices (Rev 25):**
+
+| Device | Takes power from the bus | Injects bus power |
+|---|---|---|
+| **Command station** | **Never.** All of it runs from its own supply | **Yes, it provides injection**, rules below |
+| **Booster** | **Never** | **Never** |
+
+Why neither takes bus power:
+- The bus gives at most 500 mA per jack, far too little for track power. Running only the logic
+  from the bus would split the device across two supplies, so it would be half working whenever
+  one of them is off.
+- On a booster, it would also make the isolated CAN side depend on the bus being powered.
+
+**Command station injection:**
+1. The track supply is often above 15 V (larger scales), so injection goes through the command
+   station's own regulator, with its output inside 9–15 V. Its ground is the station's GND, which
+   is already the bus reference, so this is the one case where bus power may be derived from a
+   track supply.
+2. Each jack is limited to 500 mA (one PTC per jack, as on v3.1), and the board is labelled with
+   its maximum.
+3. Injection can be turned off (a shunt or a switch, like v3.1's J3), for layouts that already
+   have an LCC power supply.
+4. Until the integrated command station board exists, the node board's J3 rules above apply as
+   they are.
+
+**Booster:** it never injects, because its bus side floats from its power side. Bus power taken
+from its own supply would bridge that isolation. Its isolated CAN side gets its power from an
+isolated DC-DC converter, or from a transceiver with built-in isolated power, not from the bus.
+The pins 4/5 DCC input needs no power on the bus side: the DCC signal drives the opto's LED.
 
 **Other v3.1 rules:**
 1. A CAN ESD diode (NUP2105L) on CANH/CANL.
@@ -990,3 +1021,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 22 | 2026-09-30 | Added §4.1, LCC bus power, grounds and CAN isolation, for Node board v3.1 and later. It adds two ground domains, and one user-set MODE switch with three positions: BUS, INJECT and ISOLATED. The MOSFETs switch the power, not the switch. It also requires: an isolated CAN transceiver (ISO1044) referenced to CAN_GND; RJ45 pins 3 and 6 tied (S-9.7.1.1); 500 mA PTCs; no on-board termination; nothing on the logic side wired to a bus-side net. DCC nodes (the command station and the Booster) always run ISOLATED. Prompted by Balazs Racz's review of the CommandStation README on the OpenLCB list. Hardware rules only: no firmware change. Nodes pick up `"22.<patch>"` at their next release, per §7.3. |
 | 23 | 2026-09-30 | Rewrote §4.1 after Balazs Racz (TCS) replied on the OpenLCB list. Rev 22 made every node isolated-capable (ISO1044 plus a BUS / INJECT / ISOLATED switch driving MOSFETs) and said DCC nodes always run ISOLATED; both are withdrawn. Now: every node ties RJ45 pins 3, 6 and 7 to GND; accessory nodes and the command station are not isolated, and the command station is the ground reference; isolation belongs only in boosters (CAN and the pins 4/5 DCC input) and in USB-LCC adapters. v3.1 bus power is one SP3T 500 mA switch (BUS / INJECT / LOCAL) carrying the power itself; a NUP2105L ESD diode and 500 mA PTCs stay. Hardware rules only, no firmware change. |
 | 24 | 2026-09-30 | §4.1: v3.1's bus-power select J3 is four header pins in a T plus one shunt, not a slide switch. With one 500 mA PTC per jack, which TN-9.7.1.1 allows ("separately power them up to 0.5A each"), INJECT can pass up to 1 A through J3, and miniature slide switches are rated 500 mA at most. Also corrects the current rule to 500 mA per jack. |
+| 25 | 2026-10-03 | §4.1: bus power on DCC devices. The command station never takes power from the bus and provides injection: through its own regulator (9-15 V out, since its track supply is often higher), 500 mA per jack, labelled, and able to be turned off. That is the one allowed case of bus power derived from a track supply, because the station's ground is already the bus reference. The booster never takes bus power and never injects; its isolated CAN side is powered by an isolated converter. Hardware rules only, no firmware change. |
