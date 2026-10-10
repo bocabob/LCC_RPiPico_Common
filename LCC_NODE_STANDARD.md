@@ -29,10 +29,18 @@ rather than restate these rules.
 >   byte layout is a hand-written `src/config/config_mem_layout.h`, and
 >   `tools/check_cdi.py --fix-array` regenerates `_cdi_data[]` and checks
 >   every CDI address, range and map against that header.
-> - **§7.2's Blue+Gold gesture**: not implemented. `gp5`/`gp28` are
->   `MAIN_nFAULT` and `SVC_CS_PIN` from boot, so the buttons are gone. Its
->   CDI "Reset Control" value (clear configuration at the next reset) does
->   the same job; the node ID is untouched either way, as §7.2 requires.
+> - **§7.2's Blue+Gold gesture**: depends on the board (Rev 26).
+>   - The board in use (the v3.0 Node board with a track daughter card):
+>     not implemented. `gp5`/`gp28` are `MAIN_nFAULT` and `SVC_CS_PIN`
+>     from boot, so the buttons are gone. Its CDI "Reset Control" value
+>     (clear configuration at the next reset) does the same job.
+>   - Its integrated board (KiCad `RPiPico_CS_int_v1`, not built yet):
+>     implemented. That board moves Blue/Gold to `gp14`/`gp15`, and a build
+>     with `CS_BOARD_INT_V1` runs the gesture (firmware 2026-10-10,
+>     compiled, not yet on hardware). How its copy differs from §7.2's
+>     code is recorded there.
+>
+>   The node ID is untouched either way, as §7.2 requires.
 >
 > `LCC_RPiPico_Booster` has not been audited against §7–§7.3 here; check
 > its own repo before relying on it.
@@ -796,11 +804,40 @@ void _check_factory_reset_gesture(void) {
   the reset gesture unreliable. This is a different (and generally
   preferable, when the pin budget is tight) choice than giving up the
   button entirely and documenting the pin as "unavailable" (§6.1's
-  `MAIN_nFAULT`/`SVC_CS_PIN` on `LCC_RPiPico_CommandStation` do this) —
-  both are valid, pick whichever fits the node; this bullet just makes
-  explicit what was previously only implicit.
+  `MAIN_nFAULT`/`SVC_CS_PIN` on `LCC_RPiPico_CommandStation`'s v3.0 board
+  do this) — both are valid, pick whichever fits the node; this bullet just
+  makes explicit what was previously only implicit.
+- **A third choice: move the buttons** (Rev 26). A board of its own can wire
+  Blue/Gold to other pins. `LCC_RPiPico_CommandStation`'s integrated board
+  (KiCad `RPiPico_CS_int_v1`) puts Blue on `gp14` (shared with its display's
+  reset line, through solder jumper JP310) and Gold on `gp15` (through
+  JP305), and keeps the gesture. Its copy differs from the code above in
+  three ways, each worth copying where it applies:
+  - **Compiled in by the node's own flag, not by `defined(BLUE_BUTTON_PIN)`.**
+    `BoardPins_Node_v30.h` always defines the button macros, so the guard
+    above never skips anything (see "Silently unavailable" above). The
+    command station defines `CS_HAS_RESET_BUTTONS` only with
+    `CS_BOARD_INT_V1`, where the buttons are real, and redefines
+    `BLUE_BUTTON_PIN`/`GOLD_BUTTON_PIN` to 14/15 there. On its v3.0 board,
+    whose `gp5`/`gp28` carry signals that can both read low at boot, the
+    gesture is not compiled at all. Use this pattern wherever a node's
+    button pins carry such a signal.
+  - **Detection and reset are split.** The check runs first thing in
+    `setup()`, before the display takes `gp14`. It only returns whether the
+    gesture was held. The reset runs after the node's config memory is up
+    (its `ConfigMemHelper_initialize()`), with the function its console's
+    `factoryreset` uses, and boot continues on the defaults without a
+    reboot. That suits a node whose storage needs the node object first.
+  - **Its watchdog is not armed yet** when the 2 s hold runs (it waits for
+    both cores' loops), so the hold cannot trip it. A node that arms a
+    watchdog earlier must run the check before that, or feed it.
 
 **Status**: implemented in all four current node projects as of 2026-06-21.
+`LCC_RPiPico_CommandStation`: on its integrated board only (`CS_BOARD_INT_V1`,
+2026-10-10, compiled, not yet on hardware); not on its v3.0 board. The
+gesture's button circuit (a button and an LED on the same line, read with
+the internal pull-up) has been confirmed working on `LCC_RPiPico_Turntable`'s
+v3.0 board.
 
 ### 7.3 SNIP Identity Fields (`hardware_version` / `software_version`)
 
@@ -1022,3 +1059,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 23 | 2026-09-30 | Rewrote §4.1 after Balazs Racz (TCS) replied on the OpenLCB list. Rev 22 made every node isolated-capable (ISO1044 plus a BUS / INJECT / ISOLATED switch driving MOSFETs) and said DCC nodes always run ISOLATED; both are withdrawn. Now: every node ties RJ45 pins 3, 6 and 7 to GND; accessory nodes and the command station are not isolated, and the command station is the ground reference; isolation belongs only in boosters (CAN and the pins 4/5 DCC input) and in USB-LCC adapters. v3.1 bus power is one SP3T 500 mA switch (BUS / INJECT / LOCAL) carrying the power itself; a NUP2105L ESD diode and 500 mA PTCs stay. Hardware rules only, no firmware change. |
 | 24 | 2026-09-30 | §4.1: v3.1's bus-power select J3 is four header pins in a T plus one shunt, not a slide switch. With one 500 mA PTC per jack, which TN-9.7.1.1 allows ("separately power them up to 0.5A each"), INJECT can pass up to 1 A through J3, and miniature slide switches are rated 500 mA at most. Also corrects the current rule to 500 mA per jack. |
 | 25 | 2026-10-03 | §4.1: bus power on DCC devices. The command station never takes power from the bus and provides injection: through its own regulator (9-15 V out, since its track supply is often higher), 500 mA per jack, labelled, and able to be turned off. That is the one allowed case of bus power derived from a track supply, because the station's ground is already the bus reference. The booster never takes bus power and never injects; its isolated CAN side is powered by an isolated converter. Hardware rules only, no firmware change. |
+| 26 | 2026-10-10 | §7.2 and the "Current node projects" note: `LCC_RPiPico_CommandStation` now has the reset gesture on its integrated board (KiCad `RPiPico_CS_int_v1`, not built). That board moves Blue/Gold to `gp14` (shared with the display reset) and `gp15`, and a build with `CS_BOARD_INT_V1` runs the gesture (commit e43757f; compiled, not on hardware). Its v3.0 board still has none (`gp5`/`gp28` are `MAIN_nFAULT`/`SVC_CS_PIN`). §7.2 gains "a third choice: move the buttons", which records how that copy differs from the reference code: it is compiled in by the node's own flag (`CS_HAS_RESET_BUTTONS`), because `BoardPins_Node_v30.h` always defines the button macros; detection runs first in `setup()` and the reset after config memory is up, with no reboot; and the hold runs before its watchdog is armed. §7.2's status also notes that the button circuit has been confirmed working on Turntable's v3.0 board. Documentation only, no rule changed; nodes pick up `"26.<patch>"` at their next release, per §7.3. |
