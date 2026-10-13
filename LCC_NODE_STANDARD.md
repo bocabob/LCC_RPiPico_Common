@@ -63,6 +63,7 @@ rather than restate these rules.
 8. [Dual-Core Contract](#8-dual-core-contract)
 9. [Naming Conventions](#9-naming-conventions)
 10. [OpenLCB Integration Rules](#10-openlcb-integration-rules)
+   - [10.1 Firmware Upgrade Through LCC](#101-firmware-upgrade-through-lcc)
 11. [Serial CLI Conventions](#11-serial-cli-conventions)
 12. [Per-Project CLAUDE.md Template](#12-per-project-claudemd-template)
 13. [Change Log](#13-change-log)
@@ -99,7 +100,10 @@ user explicitly asks to evaluate a replacement.
   [Philhower's RP2040 core](https://github.com/earlephilhower/arduino-pico#installation)
   — **never** the Mbed-based core
 - **C++ standard**: `gnu++17`
-- **Build config**: `sketch.yaml` per project (4MB flash, optimization: small)
+- **Build config**: Tools > Flash Size **"4MB (Sketch: 2MB, FS: 2MB)"** (firmware upgrade
+  through LCC needs that filesystem, [§10.1](#101-firmware-upgrade-through-lcc)), optimization
+  "Small". The Arduino IDE keeps these per sketch itself and does not read `sketch.yaml`; that
+  file is for arduino-cli only (Rev 27).
 - **OpenLCB stack**: MustangPeak `OpenLcbClib` — vendored under `src/openlcb/`
   and `src/drivers/canbus/` in every project; treated as a fixed external
   dependency (see [§10](#10-openlcb-integration-rules))
@@ -970,6 +974,60 @@ Consistent across all four current projects:
   deferred EEPROM writes) — reuse it rather than adding a second timer if the
   cadence fits.
 
+### 10.1 Firmware Upgrade Through LCC
+
+A node that offers the Firmware Upgrade protocol (`PSI_FIRMWARE_UPGRADE`, address space 0xEF)
+stages the new image in LittleFS and hands it to PicoOTA (Turntable's mechanism, ported to
+`LCC_RPiPico_CommandStation`'s `callbacks_firmware.cpp`). That needs a flash split with a
+filesystem. Two guards make sure a node never offers an upgrade it cannot finish (Rev 27):
+
+1. **The build stops without the filesystem.** The core passes the board's flash split to every
+   compile as `-DFS_START=` / `-DFS_END=` (its `platform.txt`). With Tools > Flash Size
+   "4MB (Sketch: 2MB, FS: 2MB)" they are exactly 2,097,152 apart; with "4MB (no FS)" they are
+   equal. In the file that holds the upgrade callbacks:
+
+   ```c
+   #if !defined(FS_START) || !defined(FS_END)
+   #error "No flash layout from the core (FS_START/FS_END): build for the Raspberry Pi Pico 2 or Pico 2 W with the Arduino-Pico core"
+   #elif (FS_END - FS_START) < (2 * 1024 * 1024)
+   #error "Tools > Flash Size must be \"4MB (Sketch: 2MB, FS: 2MB)\": firmware upgrade through LCC stores the new image in that 2 MB filesystem"
+   #endif
+   ```
+
+   Why at build time: the Arduino IDE keeps each sketch's board settings itself, and it has lost
+   the Flash Size setting more than once (CommandStation, 2026-09-22 and 2026-10-13; the first
+   time, the upgrade failed at `LittleFS.begin()` on the bench with the main track held off).
+   `sketch.yaml` cannot prevent that: Arduino IDE 2 does not read it, only arduino-cli does.
+
+2. **The protocol is advertised only when LittleFS can take an image.** At boot, before the node
+   is created, mount LittleFS (a blank filesystem is formatted by that first mount) and measure
+   its free space. A `firmware.bin` left from an earlier upgrade counts as free, since the next
+   upgrade removes it first. If LittleFS does not mount, or has less than this image's size plus
+   a quarter (the size is `&__flash_binary_end - XIP_BASE`), create the node from a RAM copy of
+   its `node_parameters_t` with the upgrade taken out, and say so on the console:
+
+   ```c
+   static node_parameters_t without_upgrade;
+   without_upgrade = *full;
+   without_upgrade.protocol_support &= ~(uint64_t)PSI_FIRMWARE_UPGRADE;
+   without_upgrade.address_space_firmware.present = false;
+   node = OpenLcbConfig_create_node(node_id, &without_upgrade);
+   ```
+
+   No vendored code changes (§10): the Protocol Support reply reads the node's parameters each
+   time it answers. Reference: `CallbacksFirmware_node_parameters()` in
+   `LCC_RPiPico_CommandStation/src/application_callbacks/callbacks_firmware.cpp`.
+
+3. **`sketch.yaml`, if a repo keeps one, is for arduino-cli only.** Give it a `default_fqbn` with
+   the full options (`flash=4194304_2097152`, `opt=Small`, ...) and say at its top that the IDE
+   ignores it. A `profiles:` section turns a plain `arduino-cli compile` into a profile build,
+   which sees only the libraries the profile lists, so leave profiles out unless they list every
+   library the node uses.
+
+**Adoption:** `LCC_RPiPico_CommandStation` has all three (2026-10-13: a "4MB (no FS)" build
+stops at the `#error`, and a firmware upload over WiFi passed on the bench with the guards in). The other
+nodes add them when next worked on; each node's own repo says whether it offers firmware upgrade.
+
 ## 11. Serial CLI Conventions
 
 Common debug command letters used across projects' `loop()` serial CLI —
@@ -1060,3 +1118,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 24 | 2026-09-30 | §4.1: v3.1's bus-power select J3 is four header pins in a T plus one shunt, not a slide switch. With one 500 mA PTC per jack, which TN-9.7.1.1 allows ("separately power them up to 0.5A each"), INJECT can pass up to 1 A through J3, and miniature slide switches are rated 500 mA at most. Also corrects the current rule to 500 mA per jack. |
 | 25 | 2026-10-03 | §4.1: bus power on DCC devices. The command station never takes power from the bus and provides injection: through its own regulator (9-15 V out, since its track supply is often higher), 500 mA per jack, labelled, and able to be turned off. That is the one allowed case of bus power derived from a track supply, because the station's ground is already the bus reference. The booster never takes bus power and never injects; its isolated CAN side is powered by an isolated converter. Hardware rules only, no firmware change. |
 | 26 | 2026-10-10 | §7.2 and the "Current node projects" note: `LCC_RPiPico_CommandStation` now has the reset gesture on its integrated board (KiCad `RPiPico_CS_int_v1`, not built). That board moves Blue/Gold to `gp14` (shared with the display reset) and `gp15`, and a build with `CS_BOARD_INT_V1` runs the gesture (commit e43757f; compiled, not on hardware). Its v3.0 board still has none (`gp5`/`gp28` are `MAIN_nFAULT`/`SVC_CS_PIN`). §7.2 gains "a third choice: move the buttons", which records how that copy differs from the reference code: it is compiled in by the node's own flag (`CS_HAS_RESET_BUTTONS`), because `BoardPins_Node_v30.h` always defines the button macros; detection runs first in `setup()` and the reset after config memory is up, with no reboot; and the hold runs before its watchdog is armed. §7.2's status also notes that the button circuit has been confirmed working on Turntable's v3.0 board. Documentation only, no rule changed; nodes pick up `"26.<patch>"` at their next release, per §7.3. |
+| 27 | 2026-10-13 | New §10.1, firmware upgrade through LCC: (1) the build stops unless Tools > Flash Size gives the 2 MB filesystem, checked on the core's own `FS_START`/`FS_END` defines; (2) the Firmware Upgrade protocol and space 0xEF are advertised only when LittleFS mounts with room for an image (this one's size plus a quarter), otherwise the node is created from a RAM copy of its parameters without them; (3) `sketch.yaml` is for arduino-cli only (Arduino IDE 2 does not read it), so it holds a `default_fqbn` and no profile unless the profile lists every library. §2's build-config line corrected to match. From `LCC_RPiPico_CommandStation`, where the IDE lost the Flash Size setting twice; implemented there (a firmware upload over WiFi passed on the bench with the guards in), which stays at Rev 20 for its SNIP software version. |
