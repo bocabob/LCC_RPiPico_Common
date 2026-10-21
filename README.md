@@ -106,3 +106,11 @@ the explicit contract in architecture §8, so a node without EventScript loses n
 and a node with it remains a fully conventional citizen of the standard (same CDI
 editing, same event semantics, same tools). Changes to the Node Standard that touch
 those contract points should be checked against architecture §8 before landing.
+
+## License and disclaimer
+
+Everything in this repository is under the BSD 2-Clause License, in [LICENSE](LICENSE).
+
+The Node Standard and the other documents here describe how this family of nodes is built. They
+are not a safety standard or a certification: following them does not make a design safe or
+compliant with any regulation (FCC rules included), and they come with no warranty of any kind.
