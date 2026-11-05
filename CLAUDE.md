@@ -6,6 +6,12 @@ This file provides guidance to Claude Code when working with code in this reposi
 repo — an overview of the two bodies of work here (the Node Standard and the
 EventScript Architecture), how they relate, and where to go next for each.
 
+## If someone is setting up a new computer
+
+Read [`SETUP_FOR_CLAUDE.md`](SETUP_FOR_CLAUDE.md), the guide for installing the tools and
+libraries and test-building an example. [`GETTING_STARTED.md`](GETTING_STARTED.md) is the same
+process written for the person doing it.
+
 ## If you're doing Node Standard work
 
 Read [`LCC_NODE_STANDARD.md`](LCC_NODE_STANDARD.md) — the cross-project source of

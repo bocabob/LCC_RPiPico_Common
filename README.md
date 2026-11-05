@@ -12,6 +12,10 @@ bodies of work:
 Everything else in a given node project is specific to that node; anything two nodes
 share belongs here.
 
+**Want to build or change one of these nodes?** Start with
+[`GETTING_STARTED.md`](GETTING_STARTED.md). It takes you from a new computer to a working
+build, with Claude doing the setup alongside you.
+
 ---
 
 ## 1. The Node Standard
@@ -20,7 +24,7 @@ The common platform every node firmware follows — full detail in
 [`LCC_NODE_STANDARD.md`](LCC_NODE_STANDARD.md):
 
 - **Hardware**: Raspberry Pi Pico (RP2040) and Pico 2 (RP2350) boards, custom carrier
-  PCBs designed in KiCad 8 (confirmed from the `.kicad_pcb` file-format version stamped
+  PCBs designed in KiCad 9 (confirmed from the `.kicad_pcb` file-format version stamped
   in the [`LCC-RPi-Pico-Board`](https://github.com/bocabob/LCC-RPi-Pico-Board) hardware
   repo) targeting JLCPCB fabrication/assembly, with a CAN transceiver (ACAN2517 driving
   an MCP2517/18) for the LCC bus, onboard QSPI flash, and external I2C EEPROM or FRAM
