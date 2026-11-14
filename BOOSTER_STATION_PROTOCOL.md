@@ -98,7 +98,7 @@ A reader checks the magic and the version and ignores a record it does not know.
   switches every following booster on.
 - **A trip** (CDI, "On a Trip", default this district only): it cuts this booster's track, latched
   until power is commanded on again. Set to the whole layout, the booster also sends Emergency
-  Off.
+  Off. The command station's own main track follows the same rule, by its CDI's Trip Scope.
 
 ## 4. The POM relay (`.B0.10`, version 1)
 
