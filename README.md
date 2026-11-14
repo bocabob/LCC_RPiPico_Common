@@ -101,6 +101,14 @@ portable extension to OpenLcbCLib or integrated with it (in coordination with th
 library's author); the JMRI project has expressed interest in an EventScript editor
 once the language reaches its v1.0 freeze (architecture doc §8, roadmap M7).
 
+## 3. Booster ↔ command station protocol
+
+[`BOOSTER_STATION_PROTOCOL.md`](BOOSTER_STATION_PROTOCOL.md) (2026-11-13): what
+`LCC_RPiPico_Booster` and `LCC_RPiPico_CommandStation` say to each other on LCC. It covers the
+booster's status record, the fixed `.B0.xx` events in each booster's own event space, following
+the layout's Emergency Off, the POM relay, and the meter reports. Both repos follow it; a format
+change bumps its version byte in both together.
+
 ## How the two relate
 
 The Node Standard is the platform; EventScript is an optional engine a node firmware
