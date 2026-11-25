@@ -42,8 +42,20 @@ rather than restate these rules.
 >
 >   The node ID is untouched either way, as §7.2 requires.
 >
-> `LCC_RPiPico_Booster` has not been audited against §7–§7.3 here; check
-> its own repo before relying on it.
+> `LCC_RPiPico_Booster` was checked against §7–§7.3 on 2026-11-25 (Rev 31):
+> - §7.1 is followed: the identity at +0, the marker at +12, its calibrations
+>   at +13 and +17.
+> - §7.3 is followed: SNIP and `CDI.xml` mirror, `software_version` `31.1`,
+>   `hardware_version` by board (`int_v1`, `int_v2`, `3.0`).
+> - §7.2's gesture runs on `gp14`/`gp15` on its integrated boards (passed on
+>   int_v1).
+>
+> The CommandStation's deviation applies here too: no generated
+> `Documentation/` artifacts. Its `config_mem_t` is hand-maintained and
+> static_asserted against `CDI.xml`'s addresses. Its firmware upgrade over
+> LCC (from the CommandStation's, 2026-11-25) follows §10.1: offered only
+> with room in LittleFS, and only an image whose identity marker names its
+> product and board is flashed.
 
 ---
 
@@ -636,7 +648,19 @@ update adds new struct fields, leaving the new fields as uninitialized
 leftover bytes rather than real defaults — this is exactly the bug that
 surfaced on Booster's own Phase 2 (`+12`'s new marker, above, plus the
 matching `_check_for_nvm_initialization()` logic in that project's `.ino`,
-is the fix; not yet backported to the other four projects).
+is the fix).
+
+**Backported 2026-11-25 (Rev 31)** to Turntable, Roundhouse, Clock_Lights and
+PixelLights: `NodeIdentity_read/write_eeprom_version()`, the check at boot,
+and the marker written after the defaults by the boot check, the Blue+Gold
+gesture and `'i'`. **The first-boot rule:** a chip with a configuration but
+no marker at all (0xFF, written by firmware from before the marker) keeps
+its configuration, taken as the firmware's `EEPROM_VERSION`, and is marked.
+So the update that brings the marker does not wipe a deployed node. If that
+same update also changes the layout, send `'i'` once. Otherwise defaults are
+rewritten when config byte 0 is blank or the marker holds another version.
+The Booster follows the same rule. The CommandStation rewrites its defaults
+on any marker but its own, 0xFF included.
 
 When a new protected item is needed, claim the next unused offset, document
 it in this table with its status, and shrink the "Reserved" row accordingly.
@@ -1130,3 +1154,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 28 | 2026-10-25 | §4.1: USB on any node is for the bench. The "Who is isolated" table covered only USB used as an LCC adapter; flashing and the serial console tie a PC's ground to the node's just the same, and on a booster the USB port is on the track side of its isolation, so it bypasses it. On a layout, reach a node over LCC or WiFi, or through an isolated USB-LCC adapter, and documents say so the same way. From the user's correction to the command station's documents (its README, `bf51ed7`; the Booster's README, `3e343b6`). Documentation only, no rule for code; nodes pick up `"28.<patch>"` at their next release, per §7.3. |
 | 29 | 2026-10-30 | §7.1's registry: `+13` (4 bytes) claimed by `LCC_RPiPico_CommandStation` for its main track current calibration, the reserved row now `+17` (47 bytes). The calibration is a property of the board's current sense (a shunt amplifier's gain is 18-22 V/V), measured on the bench and set with the console's `mcal`, so that the trip current and the display are real amps; like the node ID it has to survive a factory reset and a layout change, which is the case §7.1 reserved the region for. Other nodes leave `+13`..`+16` alone. Nodes pick up `"29.<patch>"` at their next release, per §7.3. |
 | 30 | 2026-11-25 | §7.1's registry: `+13` now also holds `LCC_RPiPico_Booster`'s track current calibration (the same power stage, format and meaning; its console's `M`), and `+17` (4 bytes) is claimed by the Booster for its supply-voltage calibration (`V`), in `+13`'s format. The reserved row is now `+21` (43 bytes). Found on the Booster's int_v1 bench (its `int_v1_bringup.md` C3 step 1a, 2026-11-18): the RP2350's ADC reference is the Pico 2's own filtered 3V3 (3.239 V on that board), not the 3.300 V the code assumes, and it varies from one Pico to the next. The CommandStation's VM reading has the same cause and could take `+17` the same way. Nodes pick up `"30.<patch>"` at their next release, per §7.3. |
+| 31 | 2026-11-25 | §7.1: the `EEPROM_VERSION` marker check is backported to Turntable, Roundhouse, Clock_Lights and PixelLights (compiled, not run on their hardware), with one rule for chips that already hold a configuration: no marker at all (0xFF) means firmware from before the marker, so the configuration is kept, taken as the firmware's version, and marked. The update that brings the marker therefore does not wipe a deployed node; if it also changes the layout, `'i'` once. The Booster takes the same rule; the CommandStation keeps its own (any other marker rewrites the defaults). The "Current node projects" note: the Booster checked against §7–§7.3 (followed, with the CommandStation's `Documentation/` deviation; its firmware upgrade over LCC, ported from the CommandStation's the same day, follows §10.1). `StandardVersion.h` is now 31: Rev 30 had not bumped it. Nodes pick up `"31.<patch>"` at their next release, per §7.3. |

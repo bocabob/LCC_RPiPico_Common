@@ -106,8 +106,9 @@ once the language reaches its v1.0 freeze (architecture doc §8, roadmap M7).
 [`BOOSTER_STATION_PROTOCOL.md`](BOOSTER_STATION_PROTOCOL.md) (2026-11-13): what
 `LCC_RPiPico_Booster` and `LCC_RPiPico_CommandStation` say to each other on LCC. It covers the
 booster's status record, the fixed `.B0.xx` events in each booster's own event space, following
-the layout's Emergency Off, the POM relay, and the meter reports. Both repos follow it; a format
-change bumps its version byte in both together.
+the layout's Emergency Off (and, since 2026-11-25, asking the layout's power state at login), the
+POM relay, and the meter reports. Both repos follow it; a format change bumps its version byte in
+both together.
 
 ## How the two relate
 
