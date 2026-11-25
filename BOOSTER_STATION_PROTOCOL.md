@@ -90,11 +90,14 @@ A reader checks the magic and the version and ignores a record it does not know.
 
 - **Boot:** a booster boots off (reason 1), as R15 holds it and as the station's own main track
   boots. Once logged in, a booster that follows the layout asks the layout's state: Identify
-  Producer for Clear Emergency Off. The station answers Producer Identified Valid while its
-  track is on and Invalid while it is off (it keeps both events' states). On Valid the booster
-  switches on, as Clear Emergency Off would; on Invalid it stays off with reason 4. It takes the
-  first answer within 3 s, and only if its power has not been set since boot. (Booster
-  2026-11-25; the station needs no change.)
+  Producer for Clear Emergency Off. The station answers with the layout's state, the last
+  Emergency Off or Clear Emergency Off it received or sent: Producer Identified Valid while the
+  layout is on, Invalid while it is off (it keeps both events' states). That is not always its own
+  track's: its district controls, and a trip set to this district only, change its track alone.
+  Its [Layout Power] button shows the same state (2026-11-25). On Valid the booster switches on,
+  as Clear Emergency Off would; on Invalid it stays off with reason 4. It takes the first answer
+  within 3 s, and only if its power has not been set since boot. (Booster 2026-11-25; the station
+  needs no change.)
 - **Following the layout** (CDI, "Follow Layout Emergency Off", default yes): the well-known
   Emergency Off (`01.00.00.00.00.00.FF.FF`) switches it off (reason 4). Clear Emergency Off
   (`…FF.FE`) switches it on, and so clears a trip, as the station's own track does. The station
