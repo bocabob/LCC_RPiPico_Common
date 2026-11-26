@@ -589,8 +589,8 @@ new board family's `LCC_BOARD_<FAMILY>_V<NN>` naming.
 
 ### 7.1 Protected NVM Region (above `CONFIG_MEM_SIZE`)
 
-CDI-driven config memory (above) is wiped wholesale by the `c`/`r` serial
-commands and by a CDI/struct layout change bumping `EEPROM_VERSION`. Some
+CDI-driven config memory (above) is wiped wholesale by the `clear`/`erase` console
+commands (§11; `c`/`r` before Rev 32) and by a CDI/struct layout change bumping `EEPROM_VERSION`. Some
 data must survive *both* of those — most importantly the node's own LCC
 identity — so it lives in a **separate, protected region** above
 `CONFIG_MEM_SIZE`, out of reach of the config wipe/reset bounds checks.
@@ -614,7 +614,7 @@ becomes `I2C_DEVICESIZE-64 / sizeof(buffer)` = `I2C_DEVICESIZE -
 (64/sizeof(buffer))`, not `(I2C_DEVICESIZE-64) / sizeof(buffer)`. This exact
 bug was found in `LCC_RPiPico_Turntable` on 2026-06-28: it silently made
 `ConfigMemHelper_reset_config_mem()`/`_clear_config_mem()` (the `'r'`/`'c'`
-serial commands) loop roughly 32767 times instead of 511, hammering the
+serial commands then; `erase`/`clear` since Rev 32) loop roughly 32767 times instead of 511, hammering the
 same clamped address with rapid-fire writes and producing consistent I2C
 Wire timeouts (error code 5). Fixed there and standardized across all four
 projects (Turntable, Roundhouse, PixelLights, Clock_Lights) on 2026-07-08.
@@ -766,7 +766,7 @@ nodes should include this from the start rather than adding it later.
 
 ### 7.2 Factory Reset Button Gesture
 
-A hardware equivalent of the `'r'`+`'i'` serial commands: **hold Blue + Gold
+A hardware equivalent of the console's `erase` (§11; `'r'`+`'i'` before Rev 32): **hold Blue + Gold
 together for 2 seconds at boot** to wipe configuration memory and reinitialize
 it to CDI defaults — useful when a node has no convenient serial connection
 in the field (already installed under a layout, etc.).
@@ -815,7 +815,7 @@ void _check_factory_reset_gesture(void) {
 - **Does not touch the protected identity region**: `ConfigMemHelper_reset_config_mem()`
   and `ConfigMemHelper_reset_and_write_default()` only operate within
   `CONFIG_MEM_SIZE` bounds (§7.1's whole point) — node ID survives this
-  gesture exactly like it survives `'r'`/`'i'`.
+  gesture exactly like it survives `erase`/`'i'`.
 - **Silently unavailable when the pins are shared away**: on board/breakout
   combos where `BLUE_BUTTON_PIN`/`GOLD_BUTTON_PIN` are reassigned to another
   function (e.g. Turntable's v3.0 combos share `BLUE_BUTTON_PIN` with
@@ -1067,9 +1067,9 @@ keep these consistent and don't repurpose them for node-specific commands:
 
 | Key | Action |
 |---|---|
-| `c` | Clear NVM |
+| `erase` | Wipe the configuration to `0xFF`, then reboot: the boot writes the CDI defaults. Confirm with `Y` |
+| `clear` | Wipe the configuration to `0x00`, then reboot. Confirm with `Y` |
 | `i` | Reset to CDI defaults |
-| `r` | Factory reset |
 | `p` | Toggle message logging |
 | `m` | Toggle config memory logging |
 | `x` | Load app defaults |
@@ -1079,6 +1079,24 @@ keep these consistent and don't repurpose them for node-specific commands:
 Node-specific commands (e.g. Roundhouse's `t`/`q` for fast-clock query) are
 fine to add — just don't collide with the table above, and document new
 ones in the project's own `CLAUDE.md`.
+
+**The configuration's wipes are whole words, confirmed, and end with a reboot (Rev 32).** Until
+2026-11-26 they were the single letters `r` (to `0xFF`) and `c` (to `0x00`), and an `r` typed for
+`t` (the next key) wiped the Booster's settings on its layout. Now:
+- `erase` and `clear` are typed whole. `e` and `c` start them; a letter alone, or a word that is not
+  one of the two, does nothing but say so.
+- Each asks for `Y` within 15 s. Any other key cancels, and a late `Y` does nothing. Starting one
+  cancels a pending `N` provision, and `Y` serves the wipe first.
+- Each ends with `rp2040.reboot()`. CDI reads and writes go through the RAM copy
+  (`config_mem_helper.cpp`), which a wipe leaves as it was. Without the reboot the node, its display
+  and JMRI went on showing the old settings, and a CDI write then landed alone in the wiped EEPROM.
+- A node with a hardware watchdog feeds it through the wipe: 32 KB in 511 writes of 64 bytes, each
+  after a 10 ms pause, takes over 5 s (the Booster's `BoosterWatchdog_feed()`; its 3 s watchdog had
+  reset it part way).
+
+The Booster's `_console_wipe_word()`/`_console_wipe_confirmed()` are the reference; Turntable,
+Roundhouse, Clock_Lights and PixelLights carry the same code. `i` (defaults, written to RAM and EEPROM
+together) and `N` keep their letters.
 
 `mdebugging.h` provides the `dP()`/`dPH()`/`dPS()` family, gated on whether
 `DEBUG` is `#define`d to a `Stream` (e.g. `Serial`); compiled to no-ops
@@ -1155,3 +1173,4 @@ Each row bumps `LCC_NODE_STANDARD_REVISION` in `StandardVersion.h` by one — se
 | 29 | 2026-10-30 | §7.1's registry: `+13` (4 bytes) claimed by `LCC_RPiPico_CommandStation` for its main track current calibration, the reserved row now `+17` (47 bytes). The calibration is a property of the board's current sense (a shunt amplifier's gain is 18-22 V/V), measured on the bench and set with the console's `mcal`, so that the trip current and the display are real amps; like the node ID it has to survive a factory reset and a layout change, which is the case §7.1 reserved the region for. Other nodes leave `+13`..`+16` alone. Nodes pick up `"29.<patch>"` at their next release, per §7.3. |
 | 30 | 2026-11-25 | §7.1's registry: `+13` now also holds `LCC_RPiPico_Booster`'s track current calibration (the same power stage, format and meaning; its console's `M`), and `+17` (4 bytes) is claimed by the Booster for its supply-voltage calibration (`V`), in `+13`'s format. The reserved row is now `+21` (43 bytes). Found on the Booster's int_v1 bench (its `int_v1_bringup.md` C3 step 1a, 2026-11-18): the RP2350's ADC reference is the Pico 2's own filtered 3V3 (3.239 V on that board), not the 3.300 V the code assumes, and it varies from one Pico to the next. The CommandStation's VM reading has the same cause and could take `+17` the same way. Nodes pick up `"30.<patch>"` at their next release, per §7.3. |
 | 31 | 2026-11-25 | §7.1: the `EEPROM_VERSION` marker check is backported to Turntable, Roundhouse, Clock_Lights and PixelLights (compiled, not run on their hardware), with one rule for chips that already hold a configuration: no marker at all (0xFF) means firmware from before the marker, so the configuration is kept, taken as the firmware's version, and marked. The update that brings the marker therefore does not wipe a deployed node; if it also changes the layout, `'i'` once. The Booster takes the same rule; the CommandStation keeps its own (any other marker rewrites the defaults). The "Current node projects" note: the Booster checked against §7–§7.3 (followed, with the CommandStation's `Documentation/` deviation; its firmware upgrade over LCC, ported from the CommandStation's the same day, follows §10.1). `StandardVersion.h` is now 31: Rev 30 had not bumped it. Nodes pick up `"31.<patch>"` at their next release, per §7.3. |
+| 32 | 2026-11-26 | §11: the console's configuration wipes are whole words, `erase` (was `r`, to `0xFF`) and `clear` (was `c`, to `0x00`), each confirmed with `Y` within 15 s (any other key cancels) and each followed by a reboot. From the user, after an `r` typed for `t` wiped the Booster's settings in its C6 set-up on the layout (its `int_v1_bringup.md`). Two faults came to light with it, and both are fixed. CDI reads and writes go through the RAM copy, which the wipe left stale, so a JMRI write afterwards landed alone in a wiped EEPROM; the reboot fixes that. The 32 KB wipe also overran the Booster's 3 s hardware watchdog; a node with one now feeds it through the wipe. Done in the Booster (its image H), Turntable, Roundhouse, Clock_Lights and PixelLights (compiled; none of the four has a hardware watchdog). §7.1 and §7.2's mentions of `r`/`c` now name the words. `StandardVersion.h` is 32. Nodes pick up `"32.<patch>"` at their next release, per §7.3. |
