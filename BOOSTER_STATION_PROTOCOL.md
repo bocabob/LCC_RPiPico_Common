@@ -101,7 +101,9 @@ A reader checks the magic and the version and ignores a record it does not know.
 - **Following the layout** (CDI, "Follow Layout Emergency Off", default yes): the well-known
   Emergency Off (`01.00.00.00.00.00.FF.FF`) switches it off (reason 4). Clear Emergency Off
   (`…FF.FE`) switches it on, and so clears a trip, as the station's own track does. The station
-  announces Emergency Off at login, so a booster that follows it reports at once. Per-booster on
+  announces Emergency Off at login, so a booster that follows it reports at once. It sends Emergency
+  Off before a reboot it has planned too (2026-11-26), so a following booster goes off at once, not
+  when the stream stops; an unplanned reboot still ends at the stream (the booster's watchdogs). Per-booster on
   and off stay possible (`.B0.01`/`.B0.02`, the CDI's events); the next Clear Emergency Off
   switches every following booster on.
 - **A trip** (CDI, "On a Trip", default this district only): it cuts this booster's track, latched
