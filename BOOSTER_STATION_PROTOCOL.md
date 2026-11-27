@@ -94,10 +94,16 @@ A reader checks the magic and the version and ignores a record it does not know.
   Emergency Off or Clear Emergency Off it received or sent: Producer Identified Valid while the
   layout is on, Invalid while it is off (it keeps both events' states). That is not always its own
   track's: its district controls, and a trip set to this district only, change its track alone.
-  Its [Layout Power] button shows the same state (2026-11-25). On Valid the booster switches on,
-  as Clear Emergency Off would; on Invalid it stays off with reason 4. It takes the first answer
-  within 3 s, and only if its power has not been set since boot. (Booster 2026-11-25; the station
-  needs no change.)
+  Its [Layout Power] button shows the same state (2026-11-25). **Other producers of the pair answer
+  too:** JMRI's power manager answers from the state it last saw, and through the station's WiFi
+  hub it answers first (the Booster's `int_v1_bringup.md` C5c step 2, 2026-11-27: JMRI within 5 ms,
+  the station 90-175 ms after). The first answer acts: on Valid the booster switches on, as Clear
+  Emergency Off would; on Invalid it stays off with reason 4. **Off wins** (2026-11-27): after a
+  Valid, an Invalid from any node within the 3 s still switches it off (reason 4), unless its power
+  was set since; after an Invalid, a later Valid changes nothing. So a stale "on" (JMRI's, with its
+  link down or just back) cannot keep a booster on against the station's "off". All of this only if
+  its power has not been set since boot. (Booster 2026-11-25 and 11-27; the station needs no
+  change.)
 - **Following the layout** (CDI, "Follow Layout Emergency Off", default yes): the well-known
   Emergency Off (`01.00.00.00.00.00.FF.FF`) switches it off (reason 4). Clear Emergency Off
   (`…FF.FE`) switches it on, and so clears a trip, as the station's own track does. The station
